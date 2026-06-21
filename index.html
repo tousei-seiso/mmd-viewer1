@@ -30,6 +30,20 @@
   <!-- 診断表示（ボーン数・揺れ量）の ON/OFF を切り替えるアイコンボタン（画面右上） -->
   <button id="debug-toggle" type="button" title="診断表示の切り替え" aria-pressed="false">📊</button>
 
+  <!-- モデル選択ダイアログを開くフォルダアイコン（診断アイコンの下） -->
+  <button id="model-picker-toggle" type="button" title="モデルを選択" aria-haspopup="dialog" aria-expanded="false">📁</button>
+
+  <!-- モデル選択ダイアログ（models フォルダ内の .pmx / .pmd を一覧表示） -->
+  <div id="model-dialog" class="hidden" role="dialog" aria-modal="true" aria-label="モデルを選択">
+    <div id="model-dialog-panel">
+      <div id="model-dialog-header">
+        <span>モデルを選択</span>
+        <button id="model-dialog-close" type="button" aria-label="閉じる">✕</button>
+      </div>
+      <ul id="model-list"></ul>
+    </div>
+  </div>
+
   <script type="module" src="main.js"></script>
 </body>
 </html>

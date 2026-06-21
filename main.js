@@ -150,16 +150,61 @@ async function loadModelWithFallback(paths) {
   }
 }
 
+// 現在シーンに表示しているモデルと、その読み込みパス（差し替え時に使う）
+let currentModel = null;
+let currentModelPath = null;
+
+// モデルの GPU リソースを解放する（差し替え時のメモリリーク防止）
+function disposeModel(obj) {
+  obj.traverse((child) => {
+    if (!child.isMesh && !child.isSkinnedMesh) return;
+    child.geometry?.dispose?.();
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    for (const mat of materials) {
+      if (!mat) continue;
+      // マテリアルが参照する全テクスチャを解放
+      for (const key in mat) {
+        const val = mat[key];
+        if (val && val.isTexture) val.dispose();
+      }
+      mat.dispose?.();
+    }
+  });
+}
+
+// 読み込んだメッシュをシーンへ適用する。既存モデルがあれば差し替える。
+// モデルは地面に立たせたまま固定（位置・向きは動かさない）。動くのはカメラの視点だけ。
+function applyModel(mesh, path) {
+  if (currentModel) {
+    scene.remove(currentModel);
+    disposeModel(currentModel);
+  }
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  scene.add(mesh);
+  currentModel = mesh;
+  currentModelPath = path;
+  // 新しいモデルに対して揺れもの対象ボーンを再抽出させる（次フレームの ensureSwayBones で再構築）
+  swayBones = null;
+  console.log(`モデルを読み込みました: ${path}`);
+}
+
+// 指定パスのモデルへ切り替える（ユーザーがダイアログから選択したとき）
+async function switchModel(path) {
+  setStatus(`読み込んでいます… ${path.split('/').pop()}`);
+  try {
+    const mesh = await loadModel(path);
+    applyModel(mesh, path);
+    setStatus('読み込み完了', true);
+  } catch (error) {
+    console.error('モデルの切り替えに失敗しました:', error);
+    setStatus(`読み込めませんでした: ${path.split('/').pop()}`);
+  }
+}
+
 loadModelWithFallback(MODEL_CANDIDATES)
   .then(({ mesh, path }) => {
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-
-    // モデルは地面に立たせたまま固定する（位置・向きは一切動かさない）。
-    // 動くのはカメラの視点だけ。
-    scene.add(mesh);
-
-    console.log(`モデルを読み込みました: ${path}`);
+    applyModel(mesh, path);
     setStatus('読み込み完了', true);
   })
   .catch((error) => {
@@ -395,6 +440,107 @@ if (debugToggleBtn) {
     if (!SWAY_DEBUG && statusEl) statusEl.classList.add('hidden'); // OFF 時は表示を隠す
   });
 }
+
+// -----------------------------------------------------------------------------
+// モデル選択ダイアログ（📁 アイコン）
+//   models/ フォルダ内の .pmx / .pmd を一覧表示し、選んだモデルへ切り替える。
+//   バックエンドが無いため、まず models/ のディレクトリインデックス（多くの静的
+//   サーバが返す HTML 一覧）を fetch して解析する。取得できない環境では既知リストへ
+//   フォールバックして、最低限のモデルは必ず選べるようにする。
+// -----------------------------------------------------------------------------
+
+const MODEL_DIR = 'models/';
+const MODEL_EXTS = ['.pmx', '.pmd'];
+// ディレクトリ一覧が取得できない場合のフォールバック（現状フォルダにあるモデル）
+const FALLBACK_MODEL_FILES = [
+  'model.pmx',
+  'MoonaHoshinova.pmx',
+  'MoonaHoshinova_outeroff.pmx',
+  'model.1.pmd',
+  '結月ゆかり_純_ver1.0.pmd',
+];
+
+function isModelFile(name) {
+  const lower = name.toLowerCase();
+  return MODEL_EXTS.some((ext) => lower.endsWith(ext));
+}
+
+// models/ をフェッチして HTML のディレクトリ一覧からモデルファイル名を抽出する。
+async function listModelFiles() {
+  try {
+    const res = await fetch(MODEL_DIR, { headers: { Accept: 'text/html' } });
+    if (res.ok) {
+      const html = await res.text();
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const names = new Set();
+      doc.querySelectorAll('a[href]').forEach((a) => {
+        let name = (a.getAttribute('href') || '').split('?')[0].split('#')[0];
+        name = name.replace(/\/+$/, '');     // 末尾スラッシュ除去（ディレクトリ対策）
+        name = name.split('/').pop() || '';  // パス → ファイル名のみ
+        try { name = decodeURIComponent(name); } catch { /* そのまま使う */ }
+        if (isModelFile(name)) names.add(name);
+      });
+      if (names.size) return [...names].sort((a, b) => a.localeCompare(b, 'ja'));
+    }
+  } catch (error) {
+    console.warn('ディレクトリ一覧を取得できませんでした。フォールバックを使用します。', error);
+  }
+  return [...FALLBACK_MODEL_FILES].filter(isModelFile).sort((a, b) => a.localeCompare(b, 'ja'));
+}
+
+const modelPickerBtn = document.getElementById('model-picker-toggle');
+const modelDialog = document.getElementById('model-dialog');
+const modelListEl = document.getElementById('model-list');
+const modelDialogClose = document.getElementById('model-dialog-close');
+
+function closeModelDialog() {
+  modelDialog?.classList.add('hidden');
+  modelPickerBtn?.setAttribute('aria-expanded', 'false');
+}
+
+async function openModelDialog() {
+  if (!modelDialog || !modelListEl) return;
+  modelDialog.classList.remove('hidden');
+  modelPickerBtn?.setAttribute('aria-expanded', 'true');
+  modelListEl.innerHTML = '<li class="model-list-empty">読み込み中…</li>';
+
+  const files = await listModelFiles();
+  // 取得中にダイアログが閉じられていたら何もしない
+  if (modelDialog.classList.contains('hidden')) return;
+
+  modelListEl.innerHTML = '';
+  if (!files.length) {
+    modelListEl.innerHTML = '<li class="model-list-empty">モデルが見つかりません</li>';
+    return;
+  }
+  for (const name of files) {
+    const path = MODEL_DIR + name;
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'model-list-item';
+    btn.textContent = name;
+    if (currentModelPath === path) btn.classList.add('is-current');
+    btn.addEventListener('click', () => {
+      closeModelDialog();
+      if (path !== currentModelPath) switchModel(path);
+    });
+    li.appendChild(btn);
+    modelListEl.appendChild(li);
+  }
+}
+
+if (modelPickerBtn) {
+  modelPickerBtn.addEventListener('click', () => {
+    if (modelDialog && !modelDialog.classList.contains('hidden')) closeModelDialog();
+    else openModelDialog();
+  });
+}
+modelDialogClose?.addEventListener('click', closeModelDialog);
+// 背景（パネル外）クリックで閉じる
+modelDialog?.addEventListener('click', (event) => {
+  if (event.target === modelDialog) closeModelDialog();
+});
 
 // 揺らしたい部位のキーワード（英字は小文字で比較）
 const SWAY_KEYWORDS = ['髪', 'hair', 'スカート', 'skirt', '袖', 'sleeve', '裾', 'リボン', 'ribbon', 'ひも'];
