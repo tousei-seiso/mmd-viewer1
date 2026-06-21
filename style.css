@@ -30,6 +30,10 @@ body {
 /* Three.js が生成する <canvas> をブロック要素として隙間なく表示 */
 #viewer canvas {
   display: block;
+  /* touch-action は継承されないため、ポインタイベントを受け取る canvas 自身に明示。
+     これを付けないと、タッチ時にブラウザのスクロール/ズームが優先され、ドラッグや
+     ピンチが pointercancel で消されてしまう（無反応の原因）。 */
+  touch-action: none;
 }
 
 /* 読み込み状況などを表示するオーバーレイ */
