@@ -187,13 +187,45 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-// 角度差を -PI〜PI に正規化（alpha の 360°→0° の折り返しでカメラが飛ぶのを防ぐ）
+// 角度差を -PI〜PI に正規化（折り返しの飛びを防ぐ）
 function wrapAngle(rad) {
   return Math.atan2(Math.sin(rad), Math.cos(rad));
 }
 
-// 最初の姿勢を基準（中立）にする。持ち方の角度に依存させないため。
-let neutral = null; // { alpha, beta } ラジアン
+// --- DeviceOrientation のオイラー角 → デバイス姿勢クォータニオン -------------
+//   （Three.js DeviceOrientationControls と同一ロジック）
+//   生の alpha を直接 Yaw に使うと、縦持ち（beta≈90°）でジンバルロック特異点に入り、
+//   Yaw が飛ぶ／Roll に巻き込まれる。そこで一度クォータニオンに直してから、
+//   デバイスの「視線方向」を取り出して安定した方位角を計算する。
+const _zee = new THREE.Vector3(0, 0, 1);
+const _euler = new THREE.Euler();
+const _q0 = new THREE.Quaternion();
+const _q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); // -90°(X軸)
+const _deviceQuat = new THREE.Quaternion();
+const _viewDir = new THREE.Vector3();
+
+function buildDeviceQuaternion(quat, alpha, beta, gamma, screenOrient) {
+  _euler.set(beta, alpha, -gamma, 'YXZ');
+  quat.setFromEuler(_euler);
+  quat.multiply(_q1);
+  quat.multiply(_q0.setFromAxisAngle(_zee, -screenOrient));
+  return quat;
+}
+
+// 現在の画面の向き（角度）をラジアンで返す（縦ロック中は通常 0）
+function getScreenOrientation() {
+  const angle =
+    (screen.orientation && typeof screen.orientation.angle === 'number')
+      ? screen.orientation.angle
+      : (typeof window.orientation === 'number' ? window.orientation : 0);
+  return THREE.MathUtils.degToRad(angle);
+}
+
+// Yaw は「方位角の累積」で連続化する（atan2 の ±π 折り返しをアンラップ）。
+// これによりスマホを何周回しても飛ばずに、ぐるぐると連続して周回できる。
+let prevHeading = null; // 直前フレームの方位角（ラジアン）
+let yawAccum = 0;       // 起動時を 0 とした累積 Yaw（ラジアン）
+let neutralBeta = null; // Pitch の基準（持ち方に依存させないため）
 
 // ジャイロ由来の「目標」オフセットと、滑らかに追従させる「現在」オフセット（ラジアン）
 let targetYaw = 0;
@@ -203,19 +235,29 @@ let currentPitch = 0;
 
 function onDeviceOrientation(event) {
   // 必要な角度が取れない端末・未許可では何もしない
-  if (event.alpha === null || event.beta === null) return;
+  if (event.alpha === null || event.beta === null || event.gamma === null) return;
 
-  const alpha = THREE.MathUtils.degToRad(event.alpha); // ワールド垂直軸まわり＝首振り
-  const beta = THREE.MathUtils.degToRad(event.beta);   // 前後の傾き＝うつむく／仰ぐ
+  const alpha = THREE.MathUtils.degToRad(event.alpha);
+  const beta = THREE.MathUtils.degToRad(event.beta);
+  const gamma = THREE.MathUtils.degToRad(event.gamma);
 
-  if (!neutral) {
-    neutral = { alpha, beta };
-  }
+  // --- Yaw：デバイスの視線方向を水平面へ投影した方位角から求める --------------
+  // 視線方向は Roll（左右傾き）では変化しないため、Roll は自然に無効化される。
+  buildDeviceQuaternion(_deviceQuat, alpha, beta, gamma, getScreenOrientation());
+  _viewDir.set(0, 0, -1).applyQuaternion(_deviceQuat); // 端末が向いている方向
+  const heading = Math.atan2(_viewDir.x, _viewDir.z);  // 水平面上の方位角
 
-  // 中立からの相対角だけを使う（絶対方位は使わない＝world Y まわりの“ズレ”のみ）
-  targetYaw = wrapAngle(alpha - neutral.alpha) * GYRO_YAW_SENS * GYRO_YAW_DIR;
-  targetPitch = wrapAngle(beta - neutral.beta) * GYRO_PITCH_SENS * GYRO_PITCH_DIR;
-  // gamma（左右ロール）は意図的に無視 → 地平線は絶対に傾かない
+  if (prevHeading === null) prevHeading = heading;
+  // 直前との差分を ±π に正規化して累積 → 不連続（ワープ）が消え、無限に連続周回できる
+  yawAccum += wrapAngle(heading - prevHeading);
+  prevHeading = heading;
+  targetYaw = yawAccum * GYRO_YAW_SENS * GYRO_YAW_DIR;
+
+  // --- Pitch：前後傾き（beta）。これは従来どおりで正しく動作している ----------
+  if (neutralBeta === null) neutralBeta = beta;
+  targetPitch = wrapAngle(beta - neutralBeta) * GYRO_PITCH_SENS * GYRO_PITCH_DIR;
+
+  // gamma（左右ロール）は Yaw/Pitch どちらにも使わない → キャラも地平線も不動
 }
 
 // 起動と同時に、無条件でジャイロ連動を開始する。
