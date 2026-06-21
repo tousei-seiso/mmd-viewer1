@@ -384,7 +384,7 @@ const SWAY_GAIN = 0.04;        // 加速度を揺れ量に変換する強さ
 const SWAY_MAX = 3.0;          // 揺れ量ベクトルの上限（クランプ。発散防止）
 const SWAY_ROT_FACTOR = 0.06;  // 揺れ量 → ボーン回転量（ラジアン）への係数
 const SWAY_ROT_MAX = 0.4;      // 1 フレームに加算する回転量の上限（約23°）
-const SWAY_DEBUG = true;       // [一時] 加速度・対象ボーン数を画面に表示して原因を切り分ける
+const SWAY_DEBUG = false;      // [一時] 加速度・対象ボーン数を画面に表示して原因を切り分ける
 
 // 揺らしたい部位のキーワード（英字は小文字で比較）
 const SWAY_KEYWORDS = ['髪', 'hair', 'スカート', 'skirt', '袖', 'sleeve', '裾', 'リボン', 'ribbon', 'ひも'];
