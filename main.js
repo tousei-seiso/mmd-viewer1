@@ -21,9 +21,9 @@ const MODEL_CANDIDATES = ['models/model.pmx', 'models/model.pmd'];
 const CHARACTER_CENTER = new THREE.Vector3(0, 10, 0);
 
 // ジャイロ連動の調整値
-const TILT_LIMIT_DEG = 35; // この角度（度）で効果が最大になるよう正規化する
-const OFFSET_MAX = 6;      // カメラ位置をずらす最大量（ワールド単位）
-const OFFSET_SMOOTHING = 0.1; // オフセットの追従の滑らかさ（0〜1、小さいほど滑らか）
+// デバイス方向（DeviceOrientation）から得たクォータニオンをモデルにそのまま適用し、
+// スマホの 3 軸回転（首振り＝alpha / 前後＝beta / 左右ロール＝gamma）を 1 対 1 で同期させる。
+const ROTATION_SMOOTHING = 0.2; // 回転追従の滑らかさ（0〜1。1 に近いほど即時＝完全 1:1、小さいほど滑らか）
 
 // -----------------------------------------------------------------------------
 // 基本オブジェクト（シーン・カメラ・レンダラー）
@@ -148,11 +148,22 @@ async function loadModelWithFallback(paths) {
   }
 }
 
+// ジャイロで回転させる対象。モデルは「キャラクター中心」を軸に回したいので、
+// 中心に置いたピボット（Group）の子として格納する。
+let modelPivot = null;
+
 loadModelWithFallback(MODEL_CANDIDATES)
   .then(({ mesh, path }) => {
     mesh.castShadow = true;
     mesh.receiveShadow = true;
-    scene.add(mesh);
+
+    // ピボットを中心位置に置き、モデルを中心ぶんだけ逆方向へずらして子にする。
+    // こうすると見た目の位置は変えずに、回転だけが「中心まわり」になる。
+    modelPivot = new THREE.Group();
+    modelPivot.position.copy(CHARACTER_CENTER);
+    mesh.position.sub(CHARACTER_CENTER);
+    modelPivot.add(mesh);
+    scene.add(modelPivot);
 
     console.log(`モデルを読み込みました: ${path}`);
     setStatus('読み込み完了', true);
@@ -164,42 +175,59 @@ loadModelWithFallback(MODEL_CANDIDATES)
   });
 
 // -----------------------------------------------------------------------------
-// ジャイロ（傾きセンサー）連動
-//   方針：OrbitControls が決める「ベースのカメラ位置」を毎フレームそのまま使い、
-//   そこに傾き由来の「オフセット（ズレ量）」を加算してから描画する。
-//   描画後にベース位置へ復元するため、OrbitControls はオフセットの影響を受けず、
-//   スワイプ操作とジャイロがケンカしない。
+// ジャイロ（傾きセンサー）連動 ―― クォータニオン方式
+//   方針：DeviceOrientation の alpha / beta / gamma（オイラー角）から、Three.js 標準の
+//   DeviceOrientationControls と同じ数式でデバイス姿勢のクォータニオンを生成し、それを
+//   そのままモデルへ適用する。個別軸を別々に回さないためジンバルロックが起きず、
+//   首振り・前後傾き・左右ロールの 3 軸すべてが 1 対 1 で同期する。
+//
+//   OrbitControls はカメラ（指スワイプでの視点移動）専用、ジャイロはモデルの回転専用と
+//   役割を分けたので、両者は干渉しない。
 // -----------------------------------------------------------------------------
 
-let neutralOrientation = null; // 最初の傾きを基準（中立）として記録する
+// DeviceOrientation のオイラー角（ラジアン）→ デバイス姿勢クォータニオンへの変換用。
+// （Three.js DeviceOrientationControls の setObjectQuaternion と同一ロジック）
+const _zee = new THREE.Vector3(0, 0, 1);
+const _euler = new THREE.Euler();
+const _q0 = new THREE.Quaternion();
+// 端末の「画面を手前」から「奥（-Z）を見る」向きへ補正する -90°(X軸) 回転
+const _q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
 
-// 目標オフセットと、実際に適用中のオフセット（滑らかに目標へ追従させる）
-const targetOffset = new THREE.Vector3(0, 0, 0);
-const currentOffset = new THREE.Vector3(0, 0, 0);
-// 描画前にベース位置を退避しておくための一時変数
-const basePosition = new THREE.Vector3();
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
+function deviceQuaternion(quat, alpha, beta, gamma, screenOrient) {
+  // 適用順序 'YXZ' が DeviceOrientation の仕様に対応する
+  _euler.set(beta, alpha, -gamma, 'YXZ');
+  quat.setFromEuler(_euler);          // デバイス姿勢
+  quat.multiply(_q1);                 // 端末の向き補正
+  quat.multiply(_q0.setFromAxisAngle(_zee, -screenOrient)); // 画面回転ぶんの補正
+  return quat;
 }
 
-// DeviceOrientation：beta＝前後の傾き、gamma＝左右の傾き（いずれも度）。
+// センサーから受け取った最新のオイラー角（ラジアン）。未受信の間は null。
+let deviceEuler = null;
+
+// 回転計算用の作業オブジェクト
+const _deviceQuat = new THREE.Quaternion(); // 現在のデバイス姿勢
+const _targetQuat = new THREE.Quaternion(); // モデルに与える目標回転
+let _initialQuatInv = null; // 最初の姿勢の逆クォータニオン（＝起動時を無回転の基準にする）
+
 function onDeviceOrientation(event) {
-  if (event.beta === null || event.gamma === null) return;
+  // alpha が取れない端末・未許可では何もしない（null チェック）
+  if (event.alpha === null || event.beta === null || event.gamma === null) return;
 
-  // 最初の有効なイベントの姿勢を「中立」として記録し、以降は相対角で扱う。
-  // これにより、スマホの持ち方（角度）に依らず自然な操作感になる。
-  if (!neutralOrientation) {
-    neutralOrientation = { beta: event.beta, gamma: event.gamma };
-  }
+  deviceEuler = {
+    alpha: THREE.MathUtils.degToRad(event.alpha), // 首振り（縦軸まわり）
+    beta: THREE.MathUtils.degToRad(event.beta),   // 前後の傾き
+    gamma: THREE.MathUtils.degToRad(event.gamma), // 左右のロール
+  };
+}
 
-  // 中立からの差分を求め、効きすぎないよう上限角でクランプ
-  const deltaBeta = clamp(event.beta - neutralOrientation.beta, -TILT_LIMIT_DEG, TILT_LIMIT_DEG);
-  const deltaGamma = clamp(event.gamma - neutralOrientation.gamma, -TILT_LIMIT_DEG, TILT_LIMIT_DEG);
-
-  // 左右の傾き → カメラ x、前後の傾き → カメラ y にマッピング（-1〜1 に正規化して拡大）
-  targetOffset.x = (deltaGamma / TILT_LIMIT_DEG) * OFFSET_MAX;
-  targetOffset.y = (deltaBeta / TILT_LIMIT_DEG) * OFFSET_MAX;
+// 現在の画面の向き（角度）をラジアンで返す
+function getScreenOrientation() {
+  const angle =
+    (screen.orientation && typeof screen.orientation.angle === 'number')
+      ? screen.orientation.angle
+      : (typeof window.orientation === 'number' ? window.orientation : 0);
+  return THREE.MathUtils.degToRad(angle);
 }
 
 // 起動と同時に、無条件でジャイロ連動を開始する。
@@ -216,19 +244,30 @@ function animate() {
 
   controls.update(); // enableDamping を有効にしているため毎フレーム更新が必要
 
-  // 実オフセットを目標へ滑らかに追従させる
-  // （ジャイロ未受信の間は targetOffset が 0 のままなので影響しない）
-  currentOffset.lerp(targetOffset, OFFSET_SMOOTHING);
+  // ジャイロ：デバイス姿勢クォータニオンを生成し、起動時を基準にモデルへ同期する
+  if (deviceEuler && modelPivot) {
+    deviceQuaternion(
+      _deviceQuat,
+      deviceEuler.alpha,
+      deviceEuler.beta,
+      deviceEuler.gamma,
+      getScreenOrientation()
+    );
 
-  // OrbitControls が決めたベース位置を退避し、オフセットを加算して描画
-  basePosition.copy(camera.position);
-  camera.position.add(currentOffset);
-  camera.lookAt(controls.target); // ずらしても常にキャラクター中心を向く
+    // 最初の姿勢を「無回転の基準」にする（持ち方の角度に依存させない）。
+    if (!_initialQuatInv) {
+      _initialQuatInv = _deviceQuat.clone().invert();
+    }
+
+    // 起動時からの相対回転（ワールド基準）＝ 現在姿勢 × 初期姿勢の逆。
+    // スマホを動かした分だけ、モデルが同じ向きに 1 対 1 で回る。
+    _targetQuat.multiplyQuaternions(_deviceQuat, _initialQuatInv);
+
+    // slerp で滑らかに追従（クォータニオン補間なのでジンバルロックなし）
+    modelPivot.quaternion.slerp(_targetQuat, ROTATION_SMOOTHING);
+  }
 
   renderer.render(scene, camera);
-
-  // ベース位置へ復元 → 次フレームの controls.update がオフセットに汚染されない
-  camera.position.copy(basePosition);
 }
 animate();
 
