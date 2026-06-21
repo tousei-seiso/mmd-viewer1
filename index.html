@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <!-- スマホで等倍表示・ピンチズーム無効化（3D操作とブラウザズームの競合を防ぐ） -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>MMD Viewer</title>
+  <link rel="stylesheet" href="style.css" />
+
+  <!-- Three.js 本体と addons を CDN から読み込む（ES Modules / Import Map） -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <!-- 3D 空間（ステージ）を描画するコンテナ。画面全体に広げる -->
+  <div id="viewer"></div>
+
+  <!-- 読み込み状況などをユーザーに伝えるオーバーレイ -->
+  <div id="overlay">
+    <p id="status">モデルを読み込んでいます…</p>
+  </div>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>

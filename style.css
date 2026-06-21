@@ -1,0 +1,62 @@
+/* 画面全体を使い、余白・スクロールを排除する */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  /* スマホで 3D をドラッグ操作する際のテキスト選択・コールアウトを無効化 */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  /* タッチ操作をブラウザのスクロール/ズームに奪われないようにする */
+  touch-action: none;
+}
+
+/* 3D キャンバスを配置するコンテナ（画面いっぱい） */
+#viewer {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Three.js が生成する <canvas> をブロック要素として隙間なく表示 */
+#viewer canvas {
+  display: block;
+}
+
+/* 読み込み状況などを表示するオーバーレイ */
+#overlay {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  display: flex;
+  justify-content: center;
+  pointer-events: none; /* 3D 操作の邪魔をしない */
+  z-index: 10;
+}
+
+#overlay #status {
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 14px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  letter-spacing: 0.02em;
+  backdrop-filter: blur(4px);
+  transition: opacity 0.4s ease;
+}
+
+/* 読み込み完了時に付与してフェードアウトさせるクラス */
+#overlay #status.hidden {
+  opacity: 0;
+}
