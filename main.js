@@ -380,10 +380,10 @@ canvas.addEventListener('wheel', onWheel, { passive: false });
 
 // --- 揺れ量の調整値 ---
 const SWAY_DECAY = 0.9;        // 毎フレームの減衰（1 に近いほど長く揺れる）
-const SWAY_GAIN = 0.04;        // 加速度を揺れ量に変換する強さ
-const SWAY_MAX = 3.0;          // 揺れ量ベクトルの上限（クランプ。発散防止）
-const SWAY_ROT_FACTOR = 0.06;  // 揺れ量 → ボーン回転量（ラジアン）への係数
-const SWAY_ROT_MAX = 0.4;      // 1 フレームに加算する回転量の上限（約23°）
+const SWAY_GAIN = 0.08;        // 加速度を揺れ量に変換する強さ
+const SWAY_MAX = 5.0;          // 揺れ量ベクトルの上限（クランプ。発散防止）
+const SWAY_ROT_FACTOR = 0.18;  // 揺れ量 → ボーン回転量（ラジアン）への係数
+const SWAY_ROT_MAX = 0.9;      // 揺れによる回転オフセットの上限（約50°）
 let SWAY_DEBUG = false;        // 診断表示（加速度・揺れ量・対象ボーン数）。右上アイコンで切替
 
 // 右上アイコンで診断表示を ON/OFF する
