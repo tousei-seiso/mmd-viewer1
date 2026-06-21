@@ -429,7 +429,8 @@ function onDeviceMotion(event) {
 window.addEventListener('devicemotion', onDeviceMotion);
 
 // 対象ボーンを遅延抽出（モデル読み込み完了後、最初に見つかった時点で一度だけ）。
-// 角度は毎フレーム踊りで変わるため基準値は保持せず、ボーン参照の配列だけを持つ。
+// 各ボーンの基準姿勢（restX/Z）を保存し、毎フレーム「基準＋減衰オフセット」で
+// 絶対指定する。これにより加速度が止まると揺れが 0 に減衰し、元の位置へ戻る。
 let swayBones = null; // 抽出前は null
 
 function ensureSwayBones() {
@@ -446,7 +447,7 @@ function ensureSwayBones() {
     const lower = name.toLowerCase();
     if (SWAY_EXCLUDE.some((k) => name.includes(k) || lower.includes(k))) continue;
     if (SWAY_KEYWORDS.some((k) => name.includes(k) || lower.includes(k))) {
-      swayBones.push(bone);
+      swayBones.push({ bone, restX: bone.rotation.x, restZ: bone.rotation.z });
     }
   }
   console.log(`揺れもの対象ボーン: ${swayBones.length} 本`);
@@ -512,12 +513,14 @@ function animate() {
 
   ensureSwayBones();
   if (swayBones && swayBones.length) {
-    // 加速度と「逆方向」になびく（右に振ったら服は左へ）。1 フレーム分の加算量を上限クランプ。
+    // 加速度と「逆方向」になびく（右に振ったら服は左へ）。揺れ量はクランプ済み。
     const offX = clamp(-swayZ * SWAY_ROT_FACTOR, -SWAY_ROT_MAX, SWAY_ROT_MAX);
     const offZ = clamp(-swayX * SWAY_ROT_FACTOR, -SWAY_ROT_MAX, SWAY_ROT_MAX);
-    for (const bone of swayBones) {
-      bone.rotation.x += offX; // モーション適用後の現在角度へ相対加算
-      bone.rotation.z += offZ;
+    for (const b of swayBones) {
+      // 「基準姿勢 ＋ 減衰オフセット」を絶対指定。offX/Z は加速度が止まると 0 へ
+      // 減衰するので、ボーンは基準姿勢（rest）へ自然に戻る（スプリングバック）。
+      b.bone.rotation.x = b.restX + offX;
+      b.bone.rotation.z = b.restZ + offZ;
     }
   }
 
