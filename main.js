@@ -32,7 +32,7 @@ const BASE_PITCH = THREE.MathUtils.degToRad(-15); // 少し上から見下ろす
 // ジャイロ各成分の感度と向き（あべこべなら DIR を -1 に）
 const GYRO_YAW_SENS = 1.0,   GYRO_YAW_DIR = 1;   // 上下軸回転 → 水平周回（ワールドY軸）
 const GYRO_PITCH_SENS = 1.0, GYRO_PITCH_DIR = 1; // 前後傾き   → 見上げ／見下ろし（ローカルX軸）
-const GYRO_ROLL_SENS = 1.0,  GYRO_ROLL_DIR = 1;  // 左右傾き   → 画面の傾き（ローカルZ軸＝視線軸）
+const GYRO_ROLL_SENS = 1.0,  GYRO_ROLL_DIR = -1; // 左右傾き   → 画面の傾き（ローカルZ軸＝視線軸）
 
 const GYRO_SMOOTHING = 0.2; // 角度の追従の滑らかさ（0〜1。1 に近いほど即時）
 
