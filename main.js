@@ -409,7 +409,7 @@ let swayX = 0, swayY = 0, swayZ = 0;
 // これにより端末を静止させているときは accX/Y/Z ≒ 0 となり、ボーンが勝手に曲がり続けない。
 let gravX = 0, gravY = 0, gravZ = 0;
 let gravInit = false;
-const GRAVITY_LP = 0.9; // 1 に近いほど重力推定がゆっくり追従
+const GRAVITY_LP = 0.97; // 1 に近いほど重力推定がゆっくり追従＝振りの成分が acc に大きく残る
 
 function onDeviceMotion(event) {
   // 多くの Android で acceleration は null になるため、重力込みの値を使う
