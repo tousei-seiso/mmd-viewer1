@@ -476,6 +476,88 @@ if (screen.orientation) {
 resizeRenderer();
 
 // -----------------------------------------------------------------------------
+// 簡易揺れものシステム（フェイク物理）
+//   加速度センサー（devicemotion）の急な動きを検知し、服・髪などのボーンだけを
+//   慣性でフワッとなびかせる。体幹（センター・下半身・足など）は対象外＝体は固定。
+//   ※ 既存のジャイロ／ドラッグ／ズーム計算には一切触れず、独立ループで動かす。
+// -----------------------------------------------------------------------------
+
+// --- 揺れ量の調整値 ---
+const SWAY_DECAY = 0.9;        // 毎フレームの減衰（1 に近いほど長く揺れる）
+const SWAY_GAIN = 0.02;        // 加速度を揺れ量に変換する強さ
+const SWAY_MAX = 3.0;          // 揺れ量ベクトルの上限（クランプ。発散防止）
+const SWAY_ROT_FACTOR = 0.06;  // 揺れ量 → ボーン回転量（ラジアン）への係数
+const SWAY_ROT_MAX = 0.4;      // ボーン1本あたりの回転加算の上限（約23°）
+
+// 揺らしたい部位のキーワード（英字は小文字で比較）
+const SWAY_KEYWORDS = ['髪', 'hair', 'スカート', 'skirt', '袖', 'sleeve', '裾', 'リボン', 'ribbon', 'ひも'];
+// 体幹など、絶対に揺らさないボーン（安全のための除外）
+const SWAY_EXCLUDE = ['センター', 'center', '下半身', '上半身', '足', 'ひざ', '足首', 'つま先', 'body', 'グルーブ'];
+
+// 最新の加速度（重力を除いた値）
+let accX = 0, accY = 0, accZ = 0;
+// 減衰しながら保持する揺れ量ベクトル
+let swayX = 0, swayY = 0, swayZ = 0;
+
+function onDeviceMotion(event) {
+  const a = event.acceleration; // 重力を除いた加速度（端末によっては null）
+  if (!a) return;
+  accX = a.x || 0;
+  accY = a.y || 0;
+  accZ = a.z || 0;
+}
+window.addEventListener('devicemotion', onDeviceMotion);
+
+// 対象ボーンを遅延抽出（モデル読み込み完了後、最初に見つかった時点で一度だけ）。
+// 各ボーンの基準姿勢（restX/Z）も保存し、毎フレーム「基準＋揺れ」で上書きする
+// （= モーション適用後の角度に相対加算する考え方。累積によるドリフトを防ぐ）。
+let swayBones = null; // 抽出前は null
+
+function ensureSwayBones() {
+  if (swayBones !== null) return;
+  let skinned = null;
+  scene.traverse((obj) => {
+    if (!skinned && obj.isSkinnedMesh && obj.skeleton) skinned = obj;
+  });
+  if (!skinned) return; // まだ読み込まれていない
+
+  swayBones = [];
+  for (const bone of skinned.skeleton.bones) {
+    const name = bone.name || '';
+    const lower = name.toLowerCase();
+    if (SWAY_EXCLUDE.some((k) => name.includes(k) || lower.includes(k))) continue;
+    if (SWAY_KEYWORDS.some((k) => name.includes(k) || lower.includes(k))) {
+      swayBones.push({ bone, restX: bone.rotation.x, restZ: bone.rotation.z });
+    }
+  }
+  console.log(`揺れもの対象ボーン: ${swayBones.length} 本`);
+}
+
+// 揺れもの専用ループ（カメラの描画ループとは独立。既存コードを変更しないため）
+function swayLoop() {
+  requestAnimationFrame(swayLoop);
+
+  // 加速度を注入しつつ減衰 → 一瞬大きく揺れてから 0 へ戻る。上限でクランプ。
+  swayX = clamp(swayX * SWAY_DECAY + accX * SWAY_GAIN, -SWAY_MAX, SWAY_MAX);
+  swayY = clamp(swayY * SWAY_DECAY + accY * SWAY_GAIN, -SWAY_MAX, SWAY_MAX);
+  swayZ = clamp(swayZ * SWAY_DECAY + accZ * SWAY_GAIN, -SWAY_MAX, SWAY_MAX);
+
+  ensureSwayBones();
+  if (!swayBones || swayBones.length === 0) return;
+
+  // 加速度と「逆方向」になびく（右に振ったら服は左へ）。クランプで暴れ防止。
+  const offX = clamp(-swayZ * SWAY_ROT_FACTOR, -SWAY_ROT_MAX, SWAY_ROT_MAX);
+  const offZ = clamp(-swayX * SWAY_ROT_FACTOR, -SWAY_ROT_MAX, SWAY_ROT_MAX);
+
+  for (const b of swayBones) {
+    // 基準姿勢に対する相対加算（モーション再生を上書きしない設計）
+    b.bone.rotation.x = b.restX + offX;
+    b.bone.rotation.z = b.restZ + offZ;
+  }
+}
+swayLoop();
+
+// -----------------------------------------------------------------------------
 // ユーティリティ
 // -----------------------------------------------------------------------------
 
