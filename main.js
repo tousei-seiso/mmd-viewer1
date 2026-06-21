@@ -443,21 +443,22 @@ if (debugToggleBtn) {
 
 // -----------------------------------------------------------------------------
 // モデル選択ダイアログ（📁 アイコン）
-//   models/ フォルダ内の .pmx / .pmd を一覧表示し、選んだモデルへ切り替える。
-//   バックエンドが無いため、まず models/ のディレクトリインデックス（多くの静的
-//   サーバが返す HTML 一覧）を fetch して解析する。取得できない環境では既知リストへ
+//   models/ 以下（サブフォルダ含む）の .pmx / .pmd を一覧表示し、選んだモデルへ
+//   切り替える。テクスチャ名の衝突を避けるため、モデルは models/<名前>/ のように
+//   個別のサブフォルダに収められている前提。
+//   バックエンドが無いため、各ディレクトリのインデックス（多くの静的サーバが返す
+//   HTML 一覧）を fetch して再帰的にたどる。取得できない環境では既知リストへ
 //   フォールバックして、最低限のモデルは必ず選べるようにする。
 // -----------------------------------------------------------------------------
 
 const MODEL_DIR = 'models/';
 const MODEL_EXTS = ['.pmx', '.pmd'];
-// ディレクトリ一覧が取得できない場合のフォールバック（現状フォルダにあるモデル）
+const MODEL_MAX_DEPTH = 3; // models/ から潜る最大階層（暴走防止）
+// ディレクトリ一覧が取得できない場合のフォールバック（models/ からの相対パス）
 const FALLBACK_MODEL_FILES = [
-  'model.pmx',
-  'MoonaHoshinova.pmx',
-  'MoonaHoshinova_outeroff.pmx',
-  'model.1.pmd',
-  '結月ゆかり_純_ver1.0.pmd',
+  'MoonaHoshinova/MoonaHoshinova.pmx',
+  'MoonaHoshinova/MoonaHoshinova_outeroff.pmx',
+  'YukiYukari/結月ゆかり_純_ver1.0.pmd',
 ];
 
 function isModelFile(name) {
@@ -465,25 +466,62 @@ function isModelFile(name) {
   return MODEL_EXTS.some((ext) => lower.endsWith(ext));
 }
 
-// models/ をフェッチして HTML のディレクトリ一覧からモデルファイル名を抽出する。
+// 1 ディレクトリ分のインデックス HTML を取得し、そこに並ぶ「ファイル名」と
+// 「サブディレクトリ名」を仕分けて返す。dirUrl は末尾スラッシュ付きの URL。
+async function readDirIndex(dirUrl) {
+  const files = [];
+  const dirs = [];
+  const res = await fetch(dirUrl, { headers: { Accept: 'text/html' } });
+  if (!res.ok) return { files, dirs };
+  const html = await res.text();
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.querySelectorAll('a[href]').forEach((a) => {
+    let href = (a.getAttribute('href') || '').split('?')[0].split('#')[0];
+    if (!href || href.startsWith('/') || href.includes('://')) return; // 絶対/外部リンクは無視
+    const isDir = href.endsWith('/');
+    let name = href.replace(/\/+$/, '');   // 末尾スラッシュ除去
+    name = name.split('/').pop() || '';    // パス → 末尾の名前のみ
+    if (name === '' || name === '.' || name === '..') return; // 親・自ディレクトリは除外
+    try { name = decodeURIComponent(name); } catch { /* そのまま使う */ }
+    if (isDir) dirs.push(name);
+    else if (isModelFile(name)) files.push(name);
+  });
+  return { files, dirs };
+}
+
+// models/ 以下を再帰的にたどり、見つかった .pmx / .pmd を models/ からの相対パスで返す。
 async function listModelFiles() {
-  try {
-    const res = await fetch(MODEL_DIR, { headers: { Accept: 'text/html' } });
-    if (res.ok) {
-      const html = await res.text();
-      const doc = new DOMParser().parseFromString(html, 'text/html');
-      const names = new Set();
-      doc.querySelectorAll('a[href]').forEach((a) => {
-        let name = (a.getAttribute('href') || '').split('?')[0].split('#')[0];
-        name = name.replace(/\/+$/, '');     // 末尾スラッシュ除去（ディレクトリ対策）
-        name = name.split('/').pop() || '';  // パス → ファイル名のみ
-        try { name = decodeURIComponent(name); } catch { /* そのまま使う */ }
-        if (isModelFile(name)) names.add(name);
-      });
-      if (names.size) return [...names].sort((a, b) => a.localeCompare(b, 'ja'));
+  const results = [];        // 例: 'MoonaHoshinova/MoonaHoshinova.pmx'
+  const visited = new Set(); // 同一ディレクトリの二重訪問を防ぐ
+  let indexAvailable = false;
+
+  async function crawl(relDir, depth) {
+    if (depth > MODEL_MAX_DEPTH || visited.has(relDir)) return;
+    visited.add(relDir);
+    let entry;
+    try {
+      entry = await readDirIndex(MODEL_DIR + relDir);
+    } catch (error) {
+      return; // この階層は読めなかった（このフォルダだけスキップ）
     }
+    indexAvailable = true;
+    for (const f of entry.files) results.push(relDir + f);
+    // サブディレクトリ（テクスチャ用フォルダ等も含む）へ潜る。モデルが無ければ何も拾わない。
+    for (const d of entry.dirs) await crawl(`${relDir}${d}/`, depth + 1);
+  }
+
+  try {
+    await crawl('', 0);
   } catch (error) {
-    console.warn('ディレクトリ一覧を取得できませんでした。フォールバックを使用します。', error);
+    console.warn('モデル一覧の探索でエラーが発生しました。', error);
+  }
+
+  if (results.length) {
+    return [...new Set(results)].sort((a, b) => a.localeCompare(b, 'ja'));
+  }
+  if (!indexAvailable) {
+    // ディレクトリインデックスが使えない配信環境 → 既知リストで代替
+    console.warn('ディレクトリ一覧を取得できませんでした。フォールバックを使用します。');
   }
   return [...FALLBACK_MODEL_FILES].filter(isModelFile).sort((a, b) => a.localeCompare(b, 'ja'));
 }
