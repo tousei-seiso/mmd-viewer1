@@ -451,6 +451,17 @@ function ensureSwayBones() {
     }
   }
   console.log(`揺れもの対象ボーン: ${swayBones.length} 本`);
+  // 親子チェーンの深さを計算（祖先が swayBones に含まれる数）
+  const swayBoneSet = new Set(swayBones.map((b) => b.bone));
+  for (const b of swayBones) {
+    let depth = 0;
+    let par = b.bone.parent;
+    while (par) {
+      if (swayBoneSet.has(par)) depth++;
+      par = par.parent;
+    }
+    b.depth = depth;
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -519,8 +530,9 @@ function animate() {
     for (const b of swayBones) {
       // 「基準姿勢 ＋ 減衰オフセット」を絶対指定。offX/Z は加速度が止まると 0 へ
       // 減衰するので、ボーンは基準姿勢（rest）へ自然に戻る（スプリングバック）。
-      b.bone.rotation.x = b.restX + offX;
-      b.bone.rotation.z = b.restZ + offZ;
+      const factor = Math.pow(0.5, b.depth ?? 0);
+      b.bone.rotation.x = b.restX + offX * factor;
+      b.bone.rotation.z = b.restZ + offZ * factor;
     }
   }
 
