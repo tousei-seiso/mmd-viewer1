@@ -446,15 +446,21 @@ if (debugToggleBtn) {
 //   models/ 以下（サブフォルダ含む）の .pmx / .pmd を一覧表示し、選んだモデルへ
 //   切り替える。テクスチャ名の衝突を避けるため、モデルは models/<名前>/ のように
 //   個別のサブフォルダに収められている前提。
-//   バックエンドが無いため、各ディレクトリのインデックス（多くの静的サーバが返す
-//   HTML 一覧）を fetch して再帰的にたどる。取得できない環境では既知リストへ
-//   フォールバックして、最低限のモデルは必ず選べるようにする。
+//
+//   一覧の取得は次の優先順位:
+//     1. models/models.json（マニフェスト）… GitHub Pages 等の静的ホスティングでも
+//        確実に動く。`node tools/build-models-manifest.mjs` で再生成できる。
+//     2. ディレクトリインデックスの再帰走査 … python http.server など autoindex を
+//        返すローカル開発サーバ向け（マニフェストが無い/古いときの保険）。
+//   ※ GitHub Pages はディレクトリ一覧を返さない（models/ は 404）。このため公開環境では
+//     必ずマニフェストが必要。両方失敗したときだけ既知リストへフォールバックする。
 // -----------------------------------------------------------------------------
 
 const MODEL_DIR = 'models/';
+const MODEL_MANIFEST = 'models/models.json';
 const MODEL_EXTS = ['.pmx', '.pmd'];
 const MODEL_MAX_DEPTH = 3; // models/ から潜る最大階層（暴走防止）
-// ディレクトリ一覧が取得できない場合のフォールバック（models/ からの相対パス）
+// マニフェストもディレクトリ一覧も取れない場合のフォールバック（models/ からの相対パス）
 const FALLBACK_MODEL_FILES = [
   'MoonaHoshinova/MoonaHoshinova.pmx',
   'MoonaHoshinova/MoonaHoshinova_outeroff.pmx',
@@ -489,8 +495,28 @@ async function readDirIndex(dirUrl) {
   return { files, dirs };
 }
 
+// マニフェスト（models/models.json）を読み込む。形式は { "models": ["foo/a.pmx", ...] }
+// または ["foo/a.pmx", ...] の素の配列でも可。取得・解析できなければ null を返す。
+async function loadModelManifest() {
+  try {
+    const res = await fetch(MODEL_MANIFEST, { headers: { Accept: 'application/json' } });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const list = Array.isArray(data) ? data : data?.models;
+    if (!Array.isArray(list)) return null;
+    const cleaned = list
+      .filter((p) => typeof p === 'string')
+      .map((p) => p.replace(/^\.?\/*/, '').replace(/^models\//, '')) // 先頭の ./ や models/ を除去
+      .filter((p) => isModelFile(p));
+    return cleaned.length ? [...new Set(cleaned)].sort((a, b) => a.localeCompare(b, 'ja')) : null;
+  } catch (error) {
+    console.warn('models.json を読み込めませんでした。', error);
+    return null;
+  }
+}
+
 // models/ 以下を再帰的にたどり、見つかった .pmx / .pmd を models/ からの相対パスで返す。
-async function listModelFiles() {
+async function crawlModelFiles() {
   const results = [];        // 例: 'MoonaHoshinova/MoonaHoshinova.pmx'
   const visited = new Set(); // 同一ディレクトリの二重訪問を防ぐ
   let indexAvailable = false;
@@ -516,13 +542,23 @@ async function listModelFiles() {
     console.warn('モデル一覧の探索でエラーが発生しました。', error);
   }
 
-  if (results.length) {
-    return [...new Set(results)].sort((a, b) => a.localeCompare(b, 'ja'));
-  }
   if (!indexAvailable) {
-    // ディレクトリインデックスが使えない配信環境 → 既知リストで代替
-    console.warn('ディレクトリ一覧を取得できませんでした。フォールバックを使用します。');
+    // ディレクトリインデックスが使えない配信環境（GitHub Pages 等）
+    console.warn('ディレクトリ一覧を取得できませんでした（autoindex 非対応の配信環境）。');
   }
+  return results.length
+    ? [...new Set(results)].sort((a, b) => a.localeCompare(b, 'ja'))
+    : [];
+}
+
+// 一覧取得の入口。マニフェスト → ディレクトリ走査 → 既知リスト の順に試す。
+async function listModelFiles() {
+  const fromManifest = await loadModelManifest();
+  if (fromManifest && fromManifest.length) return fromManifest;
+
+  const fromCrawl = await crawlModelFiles();
+  if (fromCrawl.length) return fromCrawl;
+
   return [...FALLBACK_MODEL_FILES].filter(isModelFile).sort((a, b) => a.localeCompare(b, 'ja'));
 }
 
