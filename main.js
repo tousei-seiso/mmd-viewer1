@@ -4,7 +4,6 @@
 // =============================================================================
 
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { MMDLoader } from 'three/addons/loaders/MMDLoader.js';
 
 // -----------------------------------------------------------------------------
@@ -20,19 +19,31 @@ const MODEL_CANDIDATES = ['models/model.pmx', 'models/model.pmd'];
 // 腰〜胸あたりの 10 前後を注視点にすると自然に収まる）。
 const CHARACTER_CENTER = new THREE.Vector3(0, 10, 0);
 
-// ジャイロ連動の調整値
-// 方針：ジャイロは「ワールドY軸まわりの公転（方位角）」と「見下ろし／見上げ（極角）」の
-// オフセットとしてのみカメラに作用させる。モデルも地面も一切動かさない。
-//   ・左右首振り（alpha, ワールド垂直軸まわりの回転）→ 方位角（カメラが水平に回り込む）
-//   ・前後の傾け（beta, うつむく／仰ぐ）        → 極角（見下ろす／見上げる）
-//   ・左右の傾け（gamma, ハンドル/ロール）       → 使わない（地平線を傾けないため）
-const GYRO_YAW_SENS = 1.0;     // 首振りの感度（1.0＝スマホの回転と 1:1）
-const GYRO_PITCH_SENS = 1.0;   // 前後傾きの感度（1.0＝スマホの傾きと 1:1）
-const GYRO_YAW_DIR = 1;        // 首振りの向き（あべこべなら -1 に）
-const GYRO_PITCH_DIR = 1;      // 前後傾きの向き（あべこべなら -1 に）
-const GYRO_SMOOTHING = 0.2;    // オフセット追従の滑らかさ（0〜1。1 に近いほど即時）
-const POLAR_MIN = 0.15;        // 極角の下限（真上に行き過ぎない）
-const POLAR_MAX = Math.PI * 0.95; // 極角の上限（床下に回り込み過ぎない）
+// カメラの注視点＝キャラクター中心（ここは絶対に動かさない）
+const TARGET = CHARACTER_CENTER;
+
+// カメラの公転半径（target からの距離）。元の初期位置とほぼ同じ距離感。
+const ORBIT_RADIUS = 30;
+
+// 起動時の基準アングル（ジャイロの中立時に見える構図）。「正面 少し斜め上から見下ろす」。
+const BASE_YAW = THREE.MathUtils.degToRad(16);    // 少し斜め（横方向）
+const BASE_PITCH = THREE.MathUtils.degToRad(-15); // 少し上から見下ろす（負＝見下ろし）
+
+// ジャイロ各成分の感度と向き（あべこべなら DIR を -1 に）
+const GYRO_YAW_SENS = 1.0,   GYRO_YAW_DIR = 1;   // 上下軸回転 → 水平周回（ワールドY軸）
+const GYRO_PITCH_SENS = 1.0, GYRO_PITCH_DIR = 1; // 前後傾き   → 見上げ／見下ろし（ローカルX軸）
+const GYRO_ROLL_SENS = 1.0,  GYRO_ROLL_DIR = 1;  // 左右傾き   → 画面の傾き（ローカルZ軸＝視線軸）
+
+const GYRO_SMOOTHING = 0.2; // 角度の追従の滑らかさ（0〜1。1 に近いほど即時）
+
+// ピッチ（見上げ／見下ろし）の可動域。真上・真下を越えて反転しないよう制限。
+const PITCH_MIN = THREE.MathUtils.degToRad(-85);
+const PITCH_MAX = THREE.MathUtils.degToRad(85);
+
+// 固定のワールド軸（回転軸として使う）
+const WORLD_X = new THREE.Vector3(1, 0, 0);
+const WORLD_Y = new THREE.Vector3(0, 1, 0);
+const WORLD_Z = new THREE.Vector3(0, 0, 1);
 
 // -----------------------------------------------------------------------------
 // 基本オブジェクト（シーン・カメラ・レンダラー）
@@ -52,11 +63,7 @@ const camera = new THREE.PerspectiveCamera(
   0.1,                                         // ニアクリップ
   1000                                         // ファークリップ
 );
-// 初期位置：キャラクターの「正面 少し斜め上」から見下ろす。
-//   x:  少し右へずらして斜めから
-//   y:  中心より高く（見下ろす）
-//   z:  正面（+Z 側）に距離をとる
-camera.position.set(8, 18, 28);
+// 初期位置・姿勢は描画ループ内のクォータニオン合成（BASE_YAW / BASE_PITCH）で決まる。
 
 // レンダラー
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -65,20 +72,6 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 container.appendChild(renderer.domElement);
-
-// -----------------------------------------------------------------------------
-// カメラ操作（OrbitControls）
-//   常にキャラクターの中心を向くように target を設定する。
-// -----------------------------------------------------------------------------
-
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.copy(CHARACTER_CENTER); // 注視点＝キャラクター中心
-controls.enableDamping = true;          // 慣性つきで滑らかに（スマホ操作と相性が良い）
-controls.dampingFactor = 0.08;
-controls.minDistance = 5;               // 寄りすぎ防止
-controls.maxDistance = 80;              // 引きすぎ防止
-controls.maxPolarAngle = Math.PI * 0.95; // 床下まで回り込みすぎないように制限
-controls.update();
 
 // -----------------------------------------------------------------------------
 // ライト・地面（ステージ）
@@ -176,11 +169,19 @@ loadModelWithFallback(MODEL_CANDIDATES)
   });
 
 // -----------------------------------------------------------------------------
-// ジャイロ（傾きセンサー）連動 ―― ワールド基準のOrbit方式
-//   デバイス姿勢を「そのまま」適用すると、世界の上下軸ごと傾いてキャラクターが
-//   浮いて見える。これを避けるため、ジャイロからは「ワールドY軸まわりの方位角」と
-//   「見下ろし／見上げの極角」という2つのスカラー量だけを取り出し、OrbitControls が
-//   決めた基準アングルへの“オフセット”として加える。世界の上（Y）は常に固定される。
+// ジャイロ（傾きセンサー）連動 ―― ワールド基準のクォータニオン合成
+//
+//   重要な前提：スマホを縦に立てて持つと、オイラー角と物理的な動きの対応がズレる
+//   （Yaw が gamma の ±90° 制限に、Roll が alpha に出るなど）。生のオイラー角を軸へ
+//   バラバラに代入すると、軸が斜めに引きずられて干渉し、Roll が周回に混ざる／Yaw が
+//   ワープ・反転する。
+//
+//   そこで、まずデバイス姿勢クォータニオンを作り、そこから「物理的に独立した 3 成分」を
+//   姿勢に依存しない形で抽出する：
+//     ・Yaw   ＝ 視線方向を水平面へ投影した方位角（Roll でも Pitch でも変化しない）
+//     ・Pitch ＝ 視線方向の仰角（asin(viewDir.y)。Roll で変化しない）
+//     ・Roll  ＝ 視線軸まわりの「上ベクトル」のねじれ角（Yaw/Pitch から独立）
+//   抽出した 3 つを、描画ループで独立クォータニオンとして合成する。
 // -----------------------------------------------------------------------------
 
 function clamp(value, min, max) {
@@ -194,15 +195,15 @@ function wrapAngle(rad) {
 
 // --- DeviceOrientation のオイラー角 → デバイス姿勢クォータニオン -------------
 //   （Three.js DeviceOrientationControls と同一ロジック）
-//   生の alpha を直接 Yaw に使うと、縦持ち（beta≈90°）でジンバルロック特異点に入り、
-//   Yaw が飛ぶ／Roll に巻き込まれる。そこで一度クォータニオンに直してから、
-//   デバイスの「視線方向」を取り出して安定した方位角を計算する。
 const _zee = new THREE.Vector3(0, 0, 1);
 const _euler = new THREE.Euler();
 const _q0 = new THREE.Quaternion();
 const _q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); // -90°(X軸)
 const _deviceQuat = new THREE.Quaternion();
-const _viewDir = new THREE.Vector3();
+const _viewDir = new THREE.Vector3(); // デバイスの視線方向（forward）
+const _devUp = new THREE.Vector3();   // デバイスの上方向（up）
+const _refUp = new THREE.Vector3();   // ロール 0 のときの基準 up（worldUp を視線に直交化）
+const _cross = new THREE.Vector3();
 
 function buildDeviceQuaternion(quat, alpha, beta, gamma, screenOrient) {
   _euler.set(beta, alpha, -gamma, 'YXZ');
@@ -223,15 +224,14 @@ function getScreenOrientation() {
 
 // Yaw は「方位角の累積」で連続化する（atan2 の ±π 折り返しをアンラップ）。
 // これによりスマホを何周回しても飛ばずに、ぐるぐると連続して周回できる。
-let prevHeading = null; // 直前フレームの方位角（ラジアン）
-let yawAccum = 0;       // 起動時を 0 とした累積 Yaw（ラジアン）
-let neutralBeta = null; // Pitch の基準（持ち方に依存させないため）
+let prevHeading = null;  // 直前フレームの方位角（ラジアン）
+let yawAccum = 0;        // 起動時を 0 とした累積 Yaw（ラジアン）
+let neutralPitch = null; // Pitch の基準（中立）
+let neutralRoll = null;  // Roll の基準（中立）
 
-// ジャイロ由来の「目標」オフセットと、滑らかに追従させる「現在」オフセット（ラジアン）
-let targetYaw = 0;
-let targetPitch = 0;
-let currentYaw = 0;
-let currentPitch = 0;
+// 抽出した 3 成分の「目標値」と、滑らかに追従させる「現在値」（ラジアン）
+let targetYaw = 0, targetPitch = 0, targetRoll = 0;
+let currentYaw = 0, currentPitch = 0, currentRoll = 0;
 
 function onDeviceOrientation(event) {
   // 必要な角度が取れない端末・未許可では何もしない
@@ -241,23 +241,38 @@ function onDeviceOrientation(event) {
   const beta = THREE.MathUtils.degToRad(event.beta);
   const gamma = THREE.MathUtils.degToRad(event.gamma);
 
-  // --- Yaw：デバイスの視線方向を水平面へ投影した方位角から求める --------------
-  // 視線方向は Roll（左右傾き）では変化しないため、Roll は自然に無効化される。
+  // デバイス姿勢クォータニオンと、その視線方向・上方向ベクトルを求める
   buildDeviceQuaternion(_deviceQuat, alpha, beta, gamma, getScreenOrientation());
-  _viewDir.set(0, 0, -1).applyQuaternion(_deviceQuat); // 端末が向いている方向
-  const heading = Math.atan2(_viewDir.x, _viewDir.z);  // 水平面上の方位角
+  _viewDir.set(0, 0, -1).applyQuaternion(_deviceQuat).normalize();
+  _devUp.set(0, 1, 0).applyQuaternion(_deviceQuat).normalize();
 
-  if (prevHeading === null) prevHeading = heading;
-  // 直前との差分を ±π に正規化して累積 → 不連続（ワープ）が消え、無限に連続周回できる
-  yawAccum += wrapAngle(heading - prevHeading);
-  prevHeading = heading;
-  targetYaw = yawAccum * GYRO_YAW_SENS * GYRO_YAW_DIR;
+  // --- Yaw：視線方向の水平成分の方位角（Roll/Pitch から独立） ----------------
+  const horizLenSq = _viewDir.x * _viewDir.x + _viewDir.z * _viewDir.z;
+  if (horizLenSq > 1e-6) { // ほぼ真上／真下を向いているときは更新しない（方位が不定）
+    const heading = Math.atan2(_viewDir.x, _viewDir.z);
+    if (prevHeading === null) prevHeading = heading;
+    yawAccum += wrapAngle(heading - prevHeading); // 差分を累積＝連続化（ワープ防止）
+    prevHeading = heading;
+    targetYaw = yawAccum * GYRO_YAW_SENS * GYRO_YAW_DIR;
+  }
 
-  // --- Pitch：前後傾き（beta）。これは従来どおりで正しく動作している ----------
-  if (neutralBeta === null) neutralBeta = beta;
-  targetPitch = wrapAngle(beta - neutralBeta) * GYRO_PITCH_SENS * GYRO_PITCH_DIR;
+  // --- Pitch：視線方向の仰角（Roll から独立） --------------------------------
+  const pitch = Math.asin(clamp(_viewDir.y, -1, 1));
+  if (neutralPitch === null) neutralPitch = pitch;
+  targetPitch = (pitch - neutralPitch) * GYRO_PITCH_SENS * GYRO_PITCH_DIR;
 
-  // gamma（左右ロール）は Yaw/Pitch どちらにも使わない → キャラも地平線も不動
+  // --- Roll：視線軸まわりの up のねじれ角（Yaw/Pitch から独立） --------------
+  // 基準 up ＝ world up から「視線方向成分」を取り除いたもの（視線に直交）
+  _refUp.copy(WORLD_Y).addScaledVector(_viewDir, -WORLD_Y.dot(_viewDir));
+  if (_refUp.lengthSq() > 1e-6) { // 視線がほぼ垂直だと基準 up が不定 → 更新しない
+    _refUp.normalize();
+    let roll = Math.acos(clamp(_refUp.dot(_devUp), -1, 1));
+    // 符号：基準 up→デバイス up の回転が視線軸まわりに正か負か
+    _cross.crossVectors(_refUp, _devUp);
+    if (_cross.dot(_viewDir) < 0) roll = -roll;
+    if (neutralRoll === null) neutralRoll = roll;
+    targetRoll = wrapAngle(roll - neutralRoll) * GYRO_ROLL_SENS * GYRO_ROLL_DIR;
+  }
 }
 
 // 起動と同時に、無条件でジャイロ連動を開始する。
@@ -269,46 +284,48 @@ window.addEventListener('deviceorientation', onDeviceOrientation);
 // 描画ループ
 // -----------------------------------------------------------------------------
 
-// 描画前にベース位置を退避するための一時変数
-const _basePosition = new THREE.Vector3();
+// カメラ姿勢合成用の一時オブジェクト
+const _qYaw = new THREE.Quaternion();
+const _qPitch = new THREE.Quaternion();
+const _qRoll = new THREE.Quaternion();
+const _camQuat = new THREE.Quaternion();
+const _offset = new THREE.Vector3();
 
 function animate() {
   requestAnimationFrame(animate);
 
-  // OrbitControls（指スワイプ）で基準アングルを更新
-  controls.update(); // enableDamping を有効にしているため毎フレーム更新が必要
-
-  // ジャイロのオフセットを目標へ滑らかに追従させる
+  // 抽出した各成分を目標へ滑らかに追従させる（lerp）
   currentYaw += (targetYaw - currentYaw) * GYRO_SMOOTHING;
   currentPitch += (targetPitch - currentPitch) * GYRO_SMOOTHING;
+  currentRoll += (targetRoll - currentRoll) * GYRO_SMOOTHING;
 
-  // OrbitControls が決めた「基準アングル」を取得（＝スワイプ操作の結果）
-  const baseAzimuth = controls.getAzimuthalAngle();
-  const basePolar = controls.getPolarAngle();
-  const radius = controls.getDistance();
-  const target = controls.target;
+  // 起動時の構図（BASE_*）にジャイロ分を加算した最終アングル
+  const yaw = BASE_YAW + currentYaw;
+  const pitch = clamp(BASE_PITCH + currentPitch, PITCH_MIN, PITCH_MAX);
+  const roll = currentRoll;
 
-  // 基準アングルにジャイロのオフセットを加算（すべてワールドY軸基準の球面座標）
-  const azimuth = baseAzimuth + currentYaw;
-  const polar = clamp(basePolar + currentPitch, POLAR_MIN, POLAR_MAX);
+  // 3 つの回転を「完全に独立」に作る。
+  //   Qyaw : ワールド Y 軸まわり（スマホがどう傾こうが常に世界の真上が軸）
+  //   Qpitch: ワールド X 軸まわり（合成順により実質ローカルX＝カメラの右向き軸になる）
+  //   Qroll : ワールド Z 軸まわり（合成順により実質ローカルZ＝視線軸になる）
+  _qYaw.setFromAxisAngle(WORLD_Y, yaw);
+  _qPitch.setFromAxisAngle(WORLD_X, pitch);
+  _qRoll.setFromAxisAngle(WORLD_Z, roll);
 
-  // ベース位置を退避 → 次フレームの controls.update がオフセットに汚染されないようにする
-  _basePosition.copy(camera.position);
+  // 合成順 Yaw × Pitch × Roll（内在回転）。
+  //   この順序により Pitch はローカルX（右）軸、Roll はローカルZ（視線）軸まわりとなり、
+  //   Yaw だけが純粋にワールドY軸まわりになる＝Roll は周回（Yaw）に 1 ピクセルも混ざらない。
+  _camQuat.copy(_qYaw).multiply(_qPitch).multiply(_qRoll);
 
-  // 球面座標 → カメラ位置（Three.js の Spherical と同じ規約。target を中心に公転）
-  const sinPolar = Math.sin(polar);
-  camera.position.set(
-    target.x + radius * sinPolar * Math.sin(azimuth),
-    target.y + radius * Math.cos(polar),
-    target.z + radius * sinPolar * Math.cos(azimuth)
-  );
-  camera.up.set(0, 1, 0);   // 世界の「上」を常に固定（地平線が傾かない）
-  camera.lookAt(target);    // 常にキャラクター中心を見つめる
+  // 姿勢からカメラ位置を決める：target を中心に半径 ORBIT_RADIUS で公転。
+  //   カメラのローカル +Z（視線の逆向き）方向へ半径分だけ離す → 常に target を見る。
+  _offset.set(0, 0, 1).applyQuaternion(_camQuat).multiplyScalar(ORBIT_RADIUS);
+  camera.position.copy(TARGET).add(_offset);
+
+  // 姿勢を直接適用（lookAt は使わない＝Roll の傾きが打ち消されないようにするため）
+  camera.quaternion.copy(_camQuat);
 
   renderer.render(scene, camera);
-
-  // ベース位置へ復元（OrbitControls の基準を汚さない）
-  camera.position.copy(_basePosition);
 }
 animate();
 
