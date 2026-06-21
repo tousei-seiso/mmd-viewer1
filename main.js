@@ -281,6 +281,97 @@ function onDeviceOrientation(event) {
 window.addEventListener('deviceorientation', onDeviceOrientation);
 
 // -----------------------------------------------------------------------------
+// タッチ／マウス操作 ―― ドラッグ回転 ＆ ピンチ/ホイールズーム（ジャイロと共存）
+//   ジャイロの回転（currentYaw/Pitch/Roll）とは独立に、ドラッグ由来の「基準角度の
+//   オフセット（dragYaw/dragPitch）」と、ピンチ/ホイール由来の「距離（currentDistance）」を
+//   保持する。これらは描画ループでジャイロ成分に加算・合成される。
+//   ※ ジャイロのクォータニオン計算には一切手を加えない。
+// -----------------------------------------------------------------------------
+
+const MIN_DISTANCE = 5;          // 最も寄れる距離
+const MAX_DISTANCE = 80;         // 最も引ける距離
+const DRAG_ROT_SPEED = 0.005;    // ドラッグ回転の感度（ラジアン/px）
+const DRAG_YAW_DIR = -1;         // 水平ドラッグの向き（好みで反転）
+const DRAG_PITCH_DIR = -1;       // 垂直ドラッグの向き（好みで反転）
+const DRAG_PITCH_LIMIT = 1.3;    // ドラッグで変えられる見上げ/見下ろし量の上限（ラジアン）
+const WHEEL_ZOOM_SPEED = 0.0015; // ホイールズームの感度
+const ZOOM_SMOOTHING = 0.2;      // ズーム距離の追従の滑らかさ
+
+// ドラッグによる「基準角度オフセット」（ジャイロ回転に加算される）
+let dragYaw = 0;
+let dragPitch = 0;
+
+// ピンチ/ホイールによるズーム距離（目標値と、滑らかに追従する現在値）
+let targetDistance = ORBIT_RADIUS;
+let currentDistance = ORBIT_RADIUS;
+
+// 複数タッチ追跡（ポインタID → 最新座標）
+const activePointers = new Map();
+let pinchPrevDist = null; // 直前フレームの2指間距離
+
+const canvas = renderer.domElement;
+
+function pointerDistance() {
+  const pts = [...activePointers.values()];
+  if (pts.length < 2) return 0;
+  return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+}
+
+function onPointerDown(event) {
+  canvas.setPointerCapture?.(event.pointerId);
+  activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (activePointers.size === 2) pinchPrevDist = pointerDistance(); // ピンチ開始
+}
+
+function onPointerMove(event) {
+  const p = activePointers.get(event.pointerId);
+  if (!p) return;
+  const prevX = p.x;
+  const prevY = p.y;
+  p.x = event.clientX;
+  p.y = event.clientY;
+
+  if (activePointers.size === 1) {
+    // 1本指（またはマウスドラッグ）→ カメラの周回・見上げ/見下ろしの基準角を変更
+    dragYaw += (p.x - prevX) * DRAG_ROT_SPEED * DRAG_YAW_DIR;
+    dragPitch += (p.y - prevY) * DRAG_ROT_SPEED * DRAG_PITCH_DIR;
+    dragPitch = clamp(dragPitch, -DRAG_PITCH_LIMIT, DRAG_PITCH_LIMIT);
+  } else if (activePointers.size === 2) {
+    // 2本指 → ピンチズーム（指の間隔の比率で距離を伸縮）
+    const dist = pointerDistance();
+    if (pinchPrevDist !== null && dist > 0) {
+      targetDistance = clamp(
+        targetDistance * (pinchPrevDist / dist),
+        MIN_DISTANCE,
+        MAX_DISTANCE
+      );
+    }
+    pinchPrevDist = dist;
+  }
+}
+
+function onPointerUp(event) {
+  activePointers.delete(event.pointerId);
+  canvas.releasePointerCapture?.(event.pointerId);
+  if (activePointers.size < 2) pinchPrevDist = null; // ピンチ終了
+}
+
+function onWheel(event) {
+  event.preventDefault();
+  targetDistance = clamp(
+    targetDistance * (1 + event.deltaY * WHEEL_ZOOM_SPEED),
+    MIN_DISTANCE,
+    MAX_DISTANCE
+  );
+}
+
+canvas.addEventListener('pointerdown', onPointerDown);
+canvas.addEventListener('pointermove', onPointerMove);
+canvas.addEventListener('pointerup', onPointerUp);
+canvas.addEventListener('pointercancel', onPointerUp);
+canvas.addEventListener('wheel', onWheel, { passive: false });
+
+// -----------------------------------------------------------------------------
 // 描画ループ
 // -----------------------------------------------------------------------------
 
@@ -294,14 +385,18 @@ const _offset = new THREE.Vector3();
 function animate() {
   requestAnimationFrame(animate);
 
-  // 抽出した各成分を目標へ滑らかに追従させる（lerp）
+  // ジャイロの各成分を目標へ滑らかに追従させる（lerp）
   currentYaw += (targetYaw - currentYaw) * GYRO_SMOOTHING;
   currentPitch += (targetPitch - currentPitch) * GYRO_SMOOTHING;
   currentRoll += (targetRoll - currentRoll) * GYRO_SMOOTHING;
 
-  // 起動時の構図（BASE_*）にジャイロ分を加算した最終アングル
-  const yaw = BASE_YAW + currentYaw;
-  const pitch = clamp(BASE_PITCH + currentPitch, PITCH_MIN, PITCH_MAX);
+  // ズーム距離も滑らかに追従させる
+  currentDistance += (targetDistance - currentDistance) * ZOOM_SMOOTHING;
+
+  // 最終アングル＝ 起動時構図(BASE_*) ＋ ドラッグ基準オフセット ＋ ジャイロ回転傾き
+  //   Yaw/Pitch にはドラッグ分を加算（共存）、Roll はジャイロのみ。
+  const yaw = BASE_YAW + dragYaw + currentYaw;
+  const pitch = clamp(BASE_PITCH + dragPitch + currentPitch, PITCH_MIN, PITCH_MAX);
   const roll = currentRoll;
 
   // 3 つの回転を「完全に独立」に作る。
@@ -317,9 +412,10 @@ function animate() {
   //   Yaw だけが純粋にワールドY軸まわりになる＝Roll は周回（Yaw）に 1 ピクセルも混ざらない。
   _camQuat.copy(_qYaw).multiply(_qPitch).multiply(_qRoll);
 
-  // 姿勢からカメラ位置を決める：target を中心に半径 ORBIT_RADIUS で公転。
-  //   カメラのローカル +Z（視線の逆向き）方向へ半径分だけ離す → 常に target を見る。
-  _offset.set(0, 0, 1).applyQuaternion(_camQuat).multiplyScalar(ORBIT_RADIUS);
+  // 姿勢からカメラ位置を決める：target を中心に、ズーム距離 currentDistance で公転。
+  //   カメラのローカル +Z（視線の逆向き）方向へ距離分だけ離す → 常に target を見る。
+  //   ＝「向きを決めてから、ピンチ距離だけ後ろに配置する」構成。
+  _offset.set(0, 0, 1).applyQuaternion(_camQuat).multiplyScalar(currentDistance);
   camera.position.copy(TARGET).add(_offset);
 
   // 姿勢を直接適用（lookAt は使わない＝Roll の傾きが打ち消されないようにするため）
