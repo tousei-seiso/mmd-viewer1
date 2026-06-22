@@ -6,6 +6,11 @@
 import * as THREE from 'three';
 import { MMDLoader } from 'three/addons/loaders/MMDLoader.js';
 
+// ★【ここに挟み込みます！】アプリ起動時にOSの自動回転機能を「OFF」にして縦画面に完全固定する
+if (screen.orientation && screen.orientation.lock) {
+  screen.orientation.lock('portrait').catch(err => console.log("OS回転ロック制限:", err));
+}
+
 // -----------------------------------------------------------------------------
 // 設定値
 // -----------------------------------------------------------------------------
