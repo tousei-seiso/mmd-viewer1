@@ -6,11 +6,6 @@
 import * as THREE from 'three';
 import { MMDLoader } from 'three/addons/loaders/MMDLoader.js';
 
-// ★【ここに挟み込みます！】アプリ起動時にOSの自動回転機能を「OFF」にして縦画面に完全固定する
-if (screen.orientation && screen.orientation.lock) {
-  screen.orientation.lock('portrait').catch(err => console.log("OS回転ロック制限:", err));
-}
-
 // -----------------------------------------------------------------------------
 // 設定値
 // -----------------------------------------------------------------------------
@@ -447,6 +442,66 @@ if (debugToggleBtn) {
 }
 
 // -----------------------------------------------------------------------------
+// 画面の向き固定トグル（🔓⇄🔒）
+//   Android Edge/Chrome では screen.orientation.lock() は「フルスクリーン中のみ」
+//   許可される。ボタンのタップ自体が必要なユーザー操作になるため、ここで
+//   requestFullscreen() → lock('portrait') の順に呼べば確実に縦固定できる。
+//   解除時は unlock() してフルスクリーンも抜ける。ユーザーが端末操作で
+//   フルスクリーンを抜けた場合（＝ロックも自動解除）は UI を同期する。
+// -----------------------------------------------------------------------------
+const orientationLockBtn = document.getElementById('orientation-lock-toggle');
+if (orientationLockBtn) {
+  let isLocked = false;
+
+  function updateLockUI(on) {
+    isLocked = on;
+    orientationLockBtn.setAttribute('aria-pressed', String(on));
+    orientationLockBtn.textContent = on ? '🔒' : '🔓';
+    orientationLockBtn.title = on ? '画面の向き固定を解除' : '画面の向きを縦に固定';
+  }
+
+  async function enableLock() {
+    try {
+      const el = document.documentElement;
+      // lock() の前提となるフルスクリーンへ（既にフルスクリーンなら何もしない）
+      if (!document.fullscreenElement && el.requestFullscreen) {
+        await el.requestFullscreen();
+      }
+      if (screen.orientation && typeof screen.orientation.lock === 'function') {
+        await screen.orientation.lock('portrait');
+      }
+      updateLockUI(true);
+    } catch (err) {
+      // 非対応端末・拒否時はフルスクリーンだけ残さないよう後始末して元へ戻す
+      console.log('画面の向き固定に失敗:', err);
+      try { if (document.fullscreenElement && document.exitFullscreen) await document.exitFullscreen(); } catch (_) {}
+      updateLockUI(false);
+    }
+  }
+
+  async function disableLock() {
+    try {
+      if (screen.orientation && typeof screen.orientation.unlock === 'function') {
+        screen.orientation.unlock();
+      }
+    } catch (_) { /* 非対応でも無視 */ }
+    try {
+      if (document.fullscreenElement && document.exitFullscreen) await document.exitFullscreen();
+    } catch (_) { /* 無視 */ }
+    updateLockUI(false);
+  }
+
+  orientationLockBtn.addEventListener('click', () => {
+    if (isLocked) disableLock(); else enableLock();
+  });
+
+  // 端末側の操作でフルスクリーンを抜けたら向きロックも外れるので UI を合わせる
+  document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement && isLocked) updateLockUI(false);
+  });
+}
+
+// -----------------------------------------------------------------------------
 // モデル選択ダイアログ（📁 アイコン）
 //   models/ 以下（サブフォルダ含む）の .pmx / .pmd を一覧表示し、選んだモデルへ
 //   切り替える。テクスチャ名の衝突を避けるため、モデルは models/<名前>/ のように
@@ -773,24 +828,6 @@ function animate() {
   renderer.render(scene, camera);
 }
 animate();
-
-// -----------------------------------------------------------------------------
-// 画面の向きを縦（portrait）に固定
-//   大きく傾けたときの自動回転を防ぐ。Screen Orientation API は対応端末でのみ動作し、
-//   多くのブラウザでは「フルスクリーン中のみ」ロック可能なため、失敗しても致命傷に
-//   ならないよう握りつぶす（その場合は下のリサイズ追従で表示崩れを防ぐ）。
-// -----------------------------------------------------------------------------
-
-function lockPortrait() {
-  const orientation = screen.orientation;
-  if (orientation && typeof orientation.lock === 'function') {
-    // Promise を返すので reject されても無視（非対応・フルスクリーン外など）
-    orientation.lock('portrait').catch(() => {
-      /* ロック不可の環境ではリサイズ追従に任せる */
-    });
-  }
-}
-lockPortrait();
 
 // -----------------------------------------------------------------------------
 // リサイズ対応（端末回転・ウィンドウサイズ変更・アドレスバー伸縮など）
