@@ -498,6 +498,9 @@ if (orientationLockBtn) {
   // 端末側の操作でフルスクリーンを抜けたら向きロックも外れるので UI を合わせる
   document.addEventListener('fullscreenchange', () => {
     if (!document.fullscreenElement && isLocked) updateLockUI(false);
+    // 全画面の出入りでビューポート寸法が変わるので 3D 表示を確定後に追従させる
+    resizeRenderer();
+    setTimeout(resizeRenderer, 300);
   });
 }
 
@@ -844,7 +847,10 @@ function resizeRenderer() {
   camera.updateProjectionMatrix();
 
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.setSize(width, height, false);
+  // 第3引数を既定(true)にして canvas の表示サイズ(CSS)も毎回更新する。
+  // false だと描画バッファ/カメラのアスペクトだけ変わり表示サイズが初期値のまま残り、
+  // 全画面化などで高さが変わるとモデルが横に伸びる原因になる。
+  renderer.setSize(width, height);
 }
 
 // 各種「サイズが変わりうる」イベントすべてで再計算する
