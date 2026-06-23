@@ -505,6 +505,57 @@ if (orientationLockBtn) {
 }
 
 // -----------------------------------------------------------------------------
+// 正面・全身リセット（🧍 アイコン）
+//   カメラの周回角を起動時の「正面」構図へ戻し、現在表示中モデルのバウンディング
+//   ボックスから全身が画面に収まる距離を計算してズームを合わせる。
+//   ※ TARGET（注視点）は動かさない方針なので、注視点を基準に上下・左右で必要な
+//     距離をそれぞれ求め、より引いた方（＝全体が確実に収まる方）を採用する。
+// -----------------------------------------------------------------------------
+
+const resetViewBtn = document.getElementById('reset-view-toggle');
+const _fitBox = new THREE.Box3();
+
+// モデルの全身が画面に収まる、TARGET からのカメラ距離を求める
+function computeFitDistance() {
+  if (!currentModel) return ORBIT_RADIUS;
+  _fitBox.setFromObject(currentModel);
+  if (_fitBox.isEmpty()) return ORBIT_RADIUS;
+
+  // 注視点(TARGET)から見て、上下方向・左右方向それぞれの最大はみ出し量
+  const vExtent = Math.max(_fitBox.max.y - TARGET.y, TARGET.y - _fitBox.min.y);
+  const hExtent = Math.max(_fitBox.max.x - TARGET.x, TARGET.x - _fitBox.min.x);
+
+  // camera.fov は垂直方向の視野角（度）。水平FOV ＝ 垂直 × アスペクト。
+  const halfV = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+  const distV = vExtent / halfV;                   // 縦（全身の高さ）で収める距離
+  const distH = hExtent / (halfV * camera.aspect); // 横（肩幅など）で収める距離
+  const dist = Math.max(distV, distH) * 1.15;      // 少し余白を持たせる
+  return clamp(dist, MIN_DISTANCE, MAX_DISTANCE);
+}
+
+// カメラを正面・全身表示へリセットする
+function resetView() {
+  // ドラッグで付いた周回・見上げ/見下ろしのオフセットを解除（→ BASE_* の正面構図へ）
+  dragYaw = 0;
+  dragPitch = 0;
+
+  // ジャイロの中立基準を取り直す。次のセンサー値で「いまの端末姿勢」を正面とみなすため、
+  // 累積 Yaw と各中立角をリセットし、目標角も 0 に戻す（現在値はループで滑らかに追従）。
+  yawAccum = 0;
+  prevHeading = null;
+  neutralPitch = null;
+  neutralRoll = null;
+  targetYaw = 0;
+  targetPitch = 0;
+  targetRoll = 0;
+
+  // 全身が収まる距離へズーム（currentDistance はループで滑らかに追従）
+  targetDistance = computeFitDistance();
+}
+
+resetViewBtn?.addEventListener('click', resetView);
+
+// -----------------------------------------------------------------------------
 // モデル選択ダイアログ（📁 アイコン）
 //   models/ 以下（サブフォルダ含む）の .pmx / .pmd を一覧表示し、選んだモデルへ
 //   切り替える。テクスチャ名の衝突を避けるため、モデルは models/<名前>/ のように
