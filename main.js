@@ -176,6 +176,40 @@ function disposeModel(obj) {
   });
 }
 
+// -----------------------------------------------------------------------------
+// 足IKの安定化（低等身モデルでの足首暴走・ひざ不動バグ対策）
+//   ホシノルリのような小柄なモデルに大柄なモーションを当てると、CCDIKSolver が収束しきれず
+//   「ひざがわずかにしか曲がらず、足首(つま先IK)が暴走して回る」破綻が起きる。原因は2つ:
+//     ① PMX のひざIKは rotationMin/Max で制限されるが、座標変換が絡み不安定で曲がりきらない
+//        （MMDLoader 内に「うまく効かなければ limitation に戻せ」という注記がある）。
+//     ② 反復回数(iteration)が proportions に対して不足し、ひざが収束しない。
+//   対策：ひざIKリンクを「X軸の片方向曲げ(limitation)」へ固定（PMD と同じ堅牢方式）し、
+//   かつ脚IK(ひざを含むIK)の反復回数を底上げする。つま先IKは触らない（暴走増幅を避ける）。
+//   ※ この iks 配列は CCDIKSolver と pmxAnimation 経路の両方が同じ参照を使うため、
+//     ソルバ生成前のモデル読込時に一度書き換えれば両方へ効く。
+function tuneModelIK(mesh) {
+  const mmd = mesh.geometry && mesh.geometry.userData && mesh.geometry.userData.MMD;
+  const iks = mmd && mmd.iks;
+  const bones = mmd && mmd.bones;
+  if (!iks || !bones) return;
+
+  for (const ik of iks) {
+    let hasKnee = false;
+    for (const link of ik.links) {
+      const name = (bones[link.index] && bones[link.index].name) || '';
+      if (name.includes('ひざ') || name.includes('膝') || name.toLowerCase().includes('knee')) {
+        hasKnee = true;
+        // ひざは常に X 軸の片方向にだけ曲げる（過伸展・暴走を防ぐ堅牢な制約）。
+        link.limitation = new THREE.Vector3(1, 0, 0);
+        delete link.rotationMin; // 不安定な角度制限は撤去し、limitation に一本化
+        delete link.rotationMax;
+      }
+    }
+    // ひざを含む＝脚IK。収束を確実にするため反復回数を底上げ（つま先IK等は据え置き）。
+    if (hasKnee) ik.iteration = Math.max(ik.iteration || 1, 40);
+  }
+}
+
 // 読み込んだメッシュをシーンへ適用する。既存モデルがあれば差し替える。
 // モデルは地面に立たせたまま固定（位置・向きは動かさない）。動くのはカメラの視点だけ。
 function applyModel(mesh, path) {
@@ -191,6 +225,8 @@ function applyModel(mesh, path) {
   scene.add(mesh);
   currentModel = mesh;
   currentModelPath = path;
+  // 足IKを安定化（ひざを X 軸固定＋反復回数底上げ）。IKソルバ生成前にここで一度だけ行う。
+  tuneModelIK(mesh);
   // 新しいモデルに対して揺れもの対象ボーンを再抽出させる（次フレームの ensureSwayBones で再構築）
   swayBones = null;
   modelReady = true;
