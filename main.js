@@ -1205,14 +1205,17 @@ function animate() {
   camera.quaternion.copy(_camQuat);
 
   // --- ダンス（VMD）と音源の強制同期 -------------------------------------------
-  //   スマホで FPS が落ちても音と踊りがズレないよう、毎フレーム Audio の再生時間を
-  //   MMD ミキサーへ直接合わせる（経過時間ベースで進めない）。helper.update(0) は
-  //   時間を進めずに IK 等の補正と姿勢確定だけを行う。一時停止中も currentTime は
-  //   止まったままなので、その時点の姿勢を保持できる。
+  //   スマホで FPS が落ちても音と踊りがズレないよう、経過時間ではなく「音源の再生位置」
+  //   へ毎フレーム追従させる。MMDAnimationHelper は _restoreBones → mixer.update(delta)
+  //   → _saveBones → IK の順で処理し、ミキサーは delta だけ時間を進める実装なので、
+  //   delta = audio.currentTime − mixer.time を渡せば、ミキサー時刻がちょうど音源時刻に
+  //   一致する（＝強制同期）。setTime + update(0) では _restoreBones に姿勢を打ち消され、
+  //   delta=0 で再適用されず固まるため、必ず差分を渡して update する。
+  //   一時停止中は currentTime が止まり delta=0 となり、その時点の姿勢を保持する。
   let danceUpdatedThisFrame = false;
   if (danceState.active && danceState.mesh === currentModel && danceState.mixer && danceState.audio) {
-    danceState.mixer.setTime(danceState.audio.currentTime);
-    mmdHelper.update(0);
+    const delta = danceState.audio.currentTime - danceState.mixer.time;
+    mmdHelper.update(delta);
     danceUpdatedThisFrame = true;
   }
 
