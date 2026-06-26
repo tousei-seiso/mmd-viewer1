@@ -177,50 +177,65 @@ function disposeModel(obj) {
 }
 
 // -----------------------------------------------------------------------------
-// 足IK修正：移動付与(translation grant)で駆動される脚IKのターゲットを再ポイントする
-//   natsuyuki_ruri 系などは、脚IKが「IK親＋付与チェーン」で構成される:
+// 移動付与(translation grant)をアニメーションへ焼き込み、足IKが正しく動くようにする
+//   natsuyuki_ruri 系などは脚IKが「IK親＋付与チェーン」で構成される:
 //     左足ＩＫ(VMDがアニメ) → s1[移動付与] → s2[回転付与] → 左足ＩＫd(IKソルバ)
-//   IKソルバ(左足ＩＫd)のターゲット位置は s1 の「移動付与」で左足ＩＫから伝わる設計だが、
-//   Three.js の MMDAnimationHelper は移動付与を実装していない（回転付与のみ）。そのため
-//   左足ＩＫd が動かず、足が地面から持ち上がらない。
+//   IKソルバ(左足ＩＫd)の位置は s1 の「移動付与」で左足ＩＫから伝わる設計だが、Three.js の
+//   MMDAnimationHelper は回転付与のみ対応し移動付与を無視する。そのため s1 が動かず、IK
+//   ターゲット(左足ＩＫd)が静止 → 足が持ち上がらない。
 //   さらに _restoreBones/_saveBones の仕組みで、付与結果を毎フレーム外から書いても上書き
-//   されるため、付与を自前計算する方法は使えない。
-//   → 解決：IK ターゲットを「実際に VMD がアニメする元IKボーン(左足ＩＫ)」へ張り替える。
-//     これで CCDIKSolver が正しい目標位置を読み、足が持ち上がる。
-//   ※ 直結IK（左足ＩＫ自体がソルバ＝ruri_Default やイヴ）は付与チェーンが無いので無変更。
-//   ※ iks 配列は CCDIKSolver と pmxAnimation 経路で同じ参照を使うため、ソルバ生成前の
-//     モデル読込時に一度書き換えれば両経路へ効く。
-function tuneModelIK(mesh) {
+//   されてしまう。そこで正攻法として、移動付与ボーン B（付与元 P・比率 r）の位置トラックを
+//     B.localpos(t) = B.rest + r * (P.localpos(t) - P.rest)
+//   としてクリップへ追加し、ミキサーに動かさせる（＝ベイク）。MMDLoader の位置トラック値は
+//   「rest + VMDオフセット」の絶対ローカル位置なので、P.localpos(t) - P.rest = オフセット。
+//   これで s1 が動き、s2 の回転付与(対応済み)と合わさって 左足ＩＫd が正しく動き、元の IK
+//   構造のまま足が持ち上がり、つま先IKも追従する。
+//   ※ 直結IK（ruri_Default やイヴ）は移動付与チェーンが無いので何も追加されない＝無変更。
+function bakeTranslationGrants(mesh, clip) {
   const mmd = mesh.geometry && mesh.geometry.userData && mesh.geometry.userData.MMD;
-  const iks = mmd && mmd.iks;
-  const bones = mmd && mmd.bones; // ボーン定義データ（grant / parent / name を持つ）
-  if (!iks || !bones) return;
+  const bonesData = mmd && mmd.bones;
+  if (!bonesData || !clip || !clip.tracks) return;
 
-  let retargeted = 0;
-  for (const ik of iks) {
-    // 対象は「ひざを含む脚IK」のみ（腕・髪・スカート・つま先IK等は触らない＝安全）。
-    const hasKnee = ik.links.some((l) => {
-      const n = (bones[l.index] && bones[l.index].name) || '';
-      return n.includes('ひざ') || n.includes('膝') || n.toLowerCase().includes('knee');
-    });
-    if (!hasKnee) continue;
-
-    // ik.target は MMDLoader では「IKボーン自身の index」。そこから親を辿り、
-    // 移動付与(affectPosition)を持つボーンが見つかれば、その付与元が本来の目標位置。
-    const ikBoneIndex = ik.target;
-    let probe = ikBoneIndex;
-    let source = -1;
-    for (let depth = 0; depth < 8 && probe >= 0 && bones[probe]; depth++) {
-      const g = bones[probe].grant;
-      if (g && g.affectPosition && g.parentIndex >= 0) { source = g.parentIndex; break; }
-      probe = bones[probe].parent;
-    }
-    if (source >= 0 && source !== ikBoneIndex) {
-      ik.target = source; // VMDがアニメする元IKボーンへ張り替え → 足が持ち上がる
-      retargeted++;
-    }
+  // 既存の位置トラックをボーン名で引けるようにする
+  const posTrackByName = new Map();
+  for (const t of clip.tracks) {
+    const m = /^\.bones\[(.+)\]\.position$/.exec(t.name);
+    if (m) posTrackByName.set(m[1], t);
   }
-  if (retargeted) console.log(`足IK修正: 移動付与駆動の脚IK ${retargeted} 件をターゲット再ポイント`);
+
+  const newTracks = [];
+  for (let i = 0; i < bonesData.length; i++) {
+    const g = bonesData[i].grant;
+    if (!g || !g.affectPosition || g.isLocal || g.parentIndex < 0) continue; // 移動付与(非ローカル)のみ
+    const bName = bonesData[i].name;
+    if (posTrackByName.has(bName)) continue; // 既に自前の位置アニメがある場合は触らない
+    const pData = bonesData[g.parentIndex];
+    const pName = pData && pData.name;
+    const pTrack = pName && posTrackByName.get(pName);
+    if (!pTrack) continue; // 付与元にアニメ位置が無ければ動かないのでスキップ
+
+    const bBone = mesh.skeleton.getBoneByName(bName);
+    const pBone = mesh.skeleton.getBoneByName(pName);
+    if (!bBone || !pBone) continue;
+
+    const r = g.ratio;
+    const bx = bBone.position.x, by = bBone.position.y, bz = bBone.position.z; // B.rest
+    const px = pBone.position.x, py = pBone.position.y, pz = pBone.position.z; // P.rest
+    const pv = pTrack.values;
+    const n = pTrack.times.length;
+    const values = new Float32Array(n * 3);
+    for (let k = 0; k < n; k++) {
+      values[k * 3]     = bx + r * (pv[k * 3]     - px);
+      values[k * 3 + 1] = by + r * (pv[k * 3 + 1] - py);
+      values[k * 3 + 2] = bz + r * (pv[k * 3 + 2] - pz);
+    }
+    newTracks.push(new THREE.VectorKeyframeTrack(`.bones[${bName}].position`, Float32Array.from(pTrack.times), values));
+  }
+
+  if (newTracks.length) {
+    clip.tracks.push(...newTracks);
+    console.log(`移動付与を ${newTracks.length} 件アニメへ焼き込み（足IK等が正しく動く）`);
+  }
 }
 
 // 読み込んだメッシュをシーンへ適用する。既存モデルがあれば差し替える。
@@ -238,8 +253,6 @@ function applyModel(mesh, path) {
   scene.add(mesh);
   currentModel = mesh;
   currentModelPath = path;
-  // 足IKを安定化（ひざを X 軸固定＋反復回数底上げ）。IKソルバ生成前にここで一度だけ行う。
-  tuneModelIK(mesh);
   // 新しいモデルに対して揺れもの対象ボーンを再抽出させる（次フレームの ensureSwayBones で再構築）
   swayBones = null;
   modelReady = true;
@@ -1253,6 +1266,10 @@ async function loadDance(entry) {
       danceState.loading = false;
       return;
     }
+
+    // 移動付与をクリップへ焼き込む（natsuyuki_ruri 系の足IKが正しく動くように）。
+    // 直結IKのモデルでは何も追加されない（無変更）。helper.add の前に行う。
+    bakeTranslationGrants(mesh, clip);
 
     // physicsEnabled に従って適用。OFF（既定）なら Ammo 不要で軽量、揺れは簡易 sway が担当。
     // ON なら揺れもの限定の本格物理（足・体幹は除外）で髪・スカートだけ揺れる（sway は抑止）。
