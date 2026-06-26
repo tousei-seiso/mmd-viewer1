@@ -49,6 +49,10 @@
        モデルとモーションの両方が揃うまでは disabled で半透明・タップ不可。 -->
   <button id="dance-play-toggle" type="button" title="ダンスを再生" disabled>▶️</button>
 
+  <!-- 本格物理（Ammo.js）ON/OFF トグル（再生アイコンの下）。
+       ON 時に初めて Ammo.js を動的ロードする。ON 中は簡易揺れ(sway)を止めて物理に委ねる。 -->
+  <button id="physics-toggle" type="button" title="本格物理（揺れ）をON/OFF" aria-pressed="false">🎐</button>
+
   <!-- モデル選択ダイアログ（models フォルダ内の .pmx / .pmd を一覧表示） -->
   <div id="model-dialog" class="hidden" role="dialog" aria-modal="true" aria-label="モデルを選択">
     <div id="model-dialog-panel">

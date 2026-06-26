@@ -827,8 +827,12 @@ const MOTION_AUDIO_EXTS = ['.mp3', '.m4a', '.aac', '.ogg', '.wav'];
 const MOTION_DEFAULT_VMD = 'dance.vmd';   // フォルダ名のみ与えられた場合の既定
 const MOTION_DEFAULT_AUDIO = 'music.mp3';
 
-// MMD モーション再生を司るヘルパー（物理演算なしで使う）。モデルとは独立に存在する。
+// MMD モーション再生を司るヘルパー。物理演算は既定オフ（physicsEnabled で切替）。
 const mmdHelper = new MMDAnimationHelper();
+
+// 本格物理（Ammo.js）の ON/OFF。既定 OFF（軽量・Ammo 未ロード）。
+// ON のときだけ Ammo.js を動的ロードし、helper.add 時に physics:true を渡す。
+let physicsEnabled = false;
 
 // 現在ロード中／再生中のダンス状態。1 つだけ保持する。
 const danceState = {
@@ -839,6 +843,7 @@ const danceState = {
   mesh: null,      // クリップを適用したモデル（差し替え検知用）
   mixer: null,     // helper が内部生成した AnimationMixer（強制同期に使う）
   audio: null,     // HTML5 Audio オブジェクト
+  clip: null,      // 読み込んだ VMD の AnimationClip（物理 ON/OFF 切替の再適用に使う）
 };
 
 const motionPickerBtn = document.getElementById('motion-picker-toggle');
@@ -883,8 +888,112 @@ function clearDance() {
   danceState.mesh = null;
   danceState.mixer = null;
   danceState.audio = null;
+  danceState.clip = null;
   updateDancePlayButton();
 }
+
+// -----------------------------------------------------------------------------
+// 本格物理（Ammo.js）の動的ロードと ON/OFF
+//   ・Ammo.js は重い（js+wasm で約 1MB）ため、ユーザーが物理を ON にした初回だけ
+//     <script> を注入して読み込む。読み込んだ Ammo は MMDPhysics がグローバル参照
+//     するので、初期化後に window.Ammo を解決済みインスタンスへ差し替える。
+//   ・three と同じ CDN/バージョンから取得する（ammo.wasm.wasm も同階層にある）。
+// -----------------------------------------------------------------------------
+const AMMO_URL = 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/ammo.wasm.js';
+let ammoReadyPromise = null;
+
+function isAmmoReady() {
+  return typeof window.Ammo !== 'undefined' && typeof window.Ammo.btVector3 === 'function';
+}
+
+// Ammo.js を一度だけ読み込み、初期化完了で解決する Promise を返す。
+function ensureAmmo() {
+  if (isAmmoReady()) return Promise.resolve();
+  if (ammoReadyPromise) return ammoReadyPromise;
+  ammoReadyPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = AMMO_URL;
+    script.async = true;
+    script.onload = () => {
+      // この時点で window.Ammo は「ファクトリ関数」。呼ぶと wasm 初期化の Promise を返す。
+      try {
+        window.Ammo().then((lib) => {
+          window.Ammo = lib; // MMDPhysics が参照するグローバルを解決済みインスタンスへ
+          resolve();
+        }).catch(reject);
+      } catch (err) {
+        reject(err);
+      }
+    };
+    script.onerror = () => reject(new Error('Ammo.js を読み込めませんでした'));
+    document.head.appendChild(script);
+  });
+  return ammoReadyPromise;
+}
+
+// 現在ロード中のダンスへ、最新の physicsEnabled 設定を反映し直す。
+//   helper.add は物理オブジェクトを add 時に生成するため、ON/OFF 切替には remove→add が要る。
+//   音源の再生位置（currentTime）に mixer を合わせ直し、ガクつきを抑える。
+function reapplyPhysicsToCurrentDance() {
+  if (!danceState.active || !danceState.mesh || !danceState.clip) return;
+  const mesh = danceState.mesh;
+  const t = danceState.audio ? danceState.audio.currentTime : 0;
+  try { mmdHelper.remove(mesh); } catch (_) { /* 未登録なら無視 */ }
+  mmdHelper.add(mesh, { animation: danceState.clip, physics: physicsEnabled });
+  const objData = mmdHelper.objects.get(mesh);
+  danceState.mixer = objData ? objData.mixer : null;
+  // 現在の音源位置へ合わせる（次フレーム以降は delta 同期で追従）
+  if (danceState.mixer) {
+    danceState.mixer.setTime(t);
+    mmdHelper.update(0); // 現在ポーズ＋IK を確定
+  }
+  // 物理 ON 化直後は剛体が初期姿勢(pose@0)のまま。現在ポーズへ剛体を再同期して
+  // 髪・スカートが一瞬飛び出す（爆発する）のを防ぐ。
+  if (physicsEnabled && objData && objData.physics && typeof objData.physics.reset === 'function') {
+    objData.physics.reset();
+  }
+}
+
+const physicsToggleBtn = document.getElementById('physics-toggle');
+
+function updatePhysicsButton(busy = false) {
+  if (!physicsToggleBtn) return;
+  physicsToggleBtn.disabled = busy;
+  physicsToggleBtn.setAttribute('aria-pressed', String(physicsEnabled));
+  physicsToggleBtn.title = busy
+    ? '物理エンジンを準備中…'
+    : (physicsEnabled ? '本格物理：ON（タップでOFF）' : '本格物理：OFF（タップでON）');
+}
+
+async function togglePhysics() {
+  if (!physicsToggleBtn) return;
+  const turningOn = !physicsEnabled;
+
+  if (turningOn) {
+    // ON 化：初回は Ammo.js のロードを待つ（ボタンは一時無効化）
+    updatePhysicsButton(true);
+    const prevText = nowPlayingEl ? nowPlayingEl.textContent : '';
+    setNowPlaying('⏳ 物理エンジン(Ammo.js)を準備中...');
+    try {
+      await ensureAmmo();
+    } catch (error) {
+      console.error('Ammo.js の読み込みに失敗しました:', error);
+      ammoReadyPromise = null; // 次回再試行できるようリセット
+      setNowPlaying('⚠️ 物理エンジンを読み込めませんでした');
+      updatePhysicsButton(false);
+      return;
+    }
+    physicsEnabled = true;
+    setNowPlaying(prevText || '🎵 モーション未選択');
+  } else {
+    physicsEnabled = false;
+  }
+
+  updatePhysicsButton(false);
+  reapplyPhysicsToCurrentDance(); // 再生中のダンスへ即時反映
+}
+
+physicsToggleBtn?.addEventListener('click', () => { togglePhysics(); });
 
 // --- VMD アニメーションを Promise で読み込むラッパー -------------------------
 function loadAnimationClip(url, mesh) {
@@ -930,10 +1039,11 @@ async function loadDance(entry) {
   const audioUrl = MOTION_DIR + entry.audio;
 
   try {
-    // VMD クリップと音源を並行して読み込む
+    // VMD クリップと音源を並行して読み込む。物理 ON なら Ammo.js のロードも同時に待つ。
     const [clip, audio] = await Promise.all([
       loadAnimationClip(vmdUrl, mesh),
       loadAudio(audioUrl),
+      physicsEnabled ? ensureAmmo() : Promise.resolve(),
     ]);
 
     // 読み込み中にモデルが差し替わっていたら破棄（古い mesh 用クリップは使えない）
@@ -943,8 +1053,9 @@ async function loadDance(entry) {
       return;
     }
 
-    // スマホ負荷対策：物理演算 false で適用（揺れものは既存の簡易 sway が担当）
-    mmdHelper.add(mesh, { animation: clip, physics: false });
+    // physicsEnabled に従って適用。OFF（既定）なら Ammo 不要で軽量、揺れは簡易 sway が担当。
+    // ON なら MMDPhysics による本格物理で髪・スカート等が揺れる（sway は animate 側で抑止）。
+    mmdHelper.add(mesh, { animation: clip, physics: physicsEnabled });
     const objData = mmdHelper.objects.get(mesh);
 
     audio.addEventListener('ended', onAudioEnded);
@@ -955,6 +1066,7 @@ async function loadDance(entry) {
     danceState.mesh = mesh;
     danceState.mixer = objData ? objData.mixer : null;
     danceState.audio = audio;
+    danceState.clip = clip;
 
     // 先頭フレームの姿勢を反映しておく（再生前でも踊りの構えになる）
     if (danceState.mixer) {
@@ -1152,6 +1264,7 @@ motionDialog?.addEventListener('click', (event) => {
 
 // 起動時の初期表示
 updateDancePlayButton();
+updatePhysicsButton(false);
 setNowPlaying('🎵 モーション未選択');
 
 // -----------------------------------------------------------------------------
@@ -1228,7 +1341,8 @@ function animate() {
   swayZ = clamp(swayZ * SWAY_DECAY + accZ * SWAY_GAIN, -SWAY_MAX, SWAY_MAX);
 
   ensureSwayBones();
-  if (swayBones && swayBones.length) {
+  // 本格物理が ON のときは MMDPhysics に揺れを委ねるため、簡易 sway は適用しない（二重適用回避）。
+  if (!physicsEnabled && swayBones && swayBones.length) {
     // 加速度と「逆方向」になびく（右に振ったら服は左へ）。揺れ量はクランプ済み。
     const offX = clamp(-swayZ * SWAY_ROT_FACTOR, -SWAY_ROT_MAX, SWAY_ROT_MAX);
     const offZ = clamp(-swayX * SWAY_ROT_FACTOR, -SWAY_ROT_MAX, SWAY_ROT_MAX);
