@@ -1,0 +1,284 @@
+<?xml version="1.0"?>
+<CSScriptData xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <ScriptType>CS1</ScriptType>
+  <CompilerVersion>4</CompilerVersion>
+  <ReferenceAssemblies>
+    <string>System.dll</string>
+    <string>System.Core.dll</string>
+    <string>System.Data.dll</string>
+    <string>System.Data.DataSetExtensions.dll</string>
+    <string>System.Deployment.dll</string>
+    <string>System.Drawing.dll</string>
+    <string>System.Windows.Forms.dll</string>
+    <string>System.Xml.dll</string>
+    <string>System.Xml.Linq.dll</string>
+    <string>Microsoft.CSharp.dll</string>
+  </ReferenceAssemblies>
+  <UsingText>using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Windows.Forms;
+using System.IO;
+using PEPlugin;
+using PEPlugin.SDX;
+using PEPlugin.Pmx;
+using PEPlugin.Pmd;
+using PEPlugin.Vmd;
+using PEPlugin.Vme;
+using PEPlugin.Form;
+using PEPlugin.View;
+using SlimDX;
+using SlimDX.Direct3D9;
+using IES = PEPlugin.Vme.IPEVmeEventState;
+using IBS = PEPlugin.Vme.IPEVmeBoneState;
+using ISS = PEPlugin.Vme.IPEVmeSingleValueState;
+using IMS = PEPlugin.Vme.IPEVmeSingleValueState;
+using ICS = PEPlugin.Vme.IPEVmeCameraState;
+using ILS = PEPlugin.Vme.IPEVmeLightState;
+</UsingText>
+  <FullCodeText>
+// using項目はメニューから一括管理(ここへの直接追記でも動作可能)
+
+// Scriptプラグインクラス(クラス名変更不可)
+public class CSScriptClass : PEPluginClass
+{
+    // コンストラクタ
+    public CSScriptClass() : base()
+    {
+        // 起動オプション
+        // boot時実行(true/false), プラグインメニューへの登録(true/false), メニュー登録名("")
+        m_option = new PEPluginOption(false, true, "CSScript生成プラグイン");
+    }
+
+    // エントリポイント
+    public override void Run(IPERunArgs args)
+    {
+        try {
+            // ここへ処理を追加してください.
+            
+
+        }
+        catch (Exception ex) {
+            MessageBox.Show(ex.Message, "エラー", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+        }
+    }
+}
+</FullCodeText>
+  <CodeText>/////////////////////////////////////////////////////////////////////////////////
+//
+// モデル組み込み版LocalShadowに対応させるためのモデル変換スクリプト
+// ※実行ボタンを押す前に材質リストよりフェイス部の材質を選択してください
+//   (LocalShadowで影生成する材質は全て選択すること)
+// ※PMD編集モードでは材質の書き換えは行わないので手動で変更してください
+//
+/////////////////////////////////////////////////////////////////////////////////
+
+// フェイス材質のキー数値*10(エフェクトファイル側で変更する場合はここを変える)
+float LS_ExecKey = 0.39f;
+
+
+/////////////////////////////////////////////////////////////////////////////////
+
+// フェイス材質を識別するためのキー数値変換
+int[] matSelectIndex = args.Host.Connector.Form.GetSelectedMaterialIndices();
+foreach (int i in matSelectIndex)
+{
+    float power = material[i].Power;
+    material[i].Power = (LS_ExecKey + (float)((int)(power * 10.0f))) * 0.1f;
+}
+
+// LS_Centerボーンの追加
+IPXBone lsCenterBone = PEStaticBuilder.Pmx.Bone();
+
+IPXBone headBone = null;  // 頭ボーン
+IPXBone eyeLBone = null;  // 左目ボーン
+IPXBone eyeRBone = null;  // 右目ボーン
+
+for (int i = 0; i &lt; bone.Count; i++)
+{
+    if (bone[i].Name == "頭") headBone = bone[i];
+    if (bone[i].Name == "左目") eyeLBone = bone[i];
+    if (bone[i].Name == "右目") eyeRBone = bone[i];
+}
+
+if (headBone == null)
+{
+    MessageBox.Show("頭ボーンの無いモデルでは変換できません", "エラー", MessageBoxButtons.OK);
+    return;
+}
+
+int count = 0;
+V3 eyePos = new V3(0, 0, 0);
+if (eyeLBone != null) { eyePos += eyeLBone.Position; count++; }
+if (eyeRBone != null) { eyePos += eyeRBone.Position; count++; }
+if (count &gt; 0)
+{
+    eyePos /= (float)count;
+    lsCenterBone.Position = eyePos * 1.05f - headBone.Position * 0.05f;
+    lsCenterBone.Position.Z = headBone.Position.Z - 1.1f;
+}
+else
+{
+    lsCenterBone.Position = headBone.Position + (new V3(0, 1, -1.1f));
+}
+
+lsCenterBone.Name = "LS_Center";
+lsCenterBone.NameE = "LS_Center";
+lsCenterBone.Level = headBone.Level;
+lsCenterBone.Parent = headBone;
+lsCenterBone.ToOffset = new V3(0, 0, 1);
+lsCenterBone.IsRotation = true;
+lsCenterBone.IsTranslation = false;
+lsCenterBone.IsIK = false;
+lsCenterBone.Visible = true;
+lsCenterBone.Controllable = true;
+bone.Insert(bone.IndexOf(headBone) + 1, lsCenterBone);
+
+// コントロールモーフを追加
+V3 offset = new V3(0.0f, 0.0f, 0.0f);
+IPXVertexMorphOffset item1 = PEStaticBuilder.Pmx.VertexMorphOffset(vertex[0], offset);
+IPXVertexMorphOffset item2 = PEStaticBuilder.Pmx.VertexMorphOffset(vertex[0], offset);
+IPXVertexMorphOffset item3 = PEStaticBuilder.Pmx.VertexMorphOffset(vertex[0], offset);
+IPXVertexMorphOffset item4 = PEStaticBuilder.Pmx.VertexMorphOffset(vertex[0], offset);
+
+IPXMorph morphShadowLtSync = PEStaticBuilder.Pmx.Morph();
+morphShadowLtSync.Name = "LS_LtSync";
+morphShadowLtSync.NameE = "LS_LtSync";
+morphShadowLtSync.Panel = 4;
+morphShadowLtSync.Kind = MorphKind.Vertex;
+morphShadowLtSync.Offsets.Add(item1);
+morph.Add(morphShadowLtSync);
+
+IPXMorph morphShadowBlur = PEStaticBuilder.Pmx.Morph();
+morphShadowBlur.Name = "LS_Blur";
+morphShadowBlur.NameE = "LS_Blur";
+morphShadowBlur.Panel = 4;
+morphShadowBlur.Kind = MorphKind.Vertex;
+morphShadowBlur.Offsets.Add(item2);
+morph.Add(morphShadowBlur);
+
+IPXMorph morphShadowDensP = PEStaticBuilder.Pmx.Morph();
+morphShadowDensP.Name = "LS_Dens+";
+morphShadowDensP.NameE = "LS_Dens+";
+morphShadowDensP.Panel = 4;
+morphShadowDensP.Kind = MorphKind.Vertex;
+morphShadowDensP.Offsets.Add(item3);
+morph.Add(morphShadowDensP);
+
+IPXMorph morphShadowDensM = PEStaticBuilder.Pmx.Morph();
+morphShadowDensM.Name = "LS_Dens-";
+morphShadowDensM.NameE = "LS_Dens-";
+morphShadowDensM.Panel = 4;
+morphShadowDensM.Kind = MorphKind.Vertex;
+morphShadowDensM.Offsets.Add(item4);
+morph.Add(morphShadowDensM);
+
+// 表示枠に追加
+pmx.ExpressionNode.Items.Add(PEStaticBuilder.Pmx.MorphNodeItem(morphShadowLtSync));
+pmx.ExpressionNode.Items.Add(PEStaticBuilder.Pmx.MorphNodeItem(morphShadowBlur));
+pmx.ExpressionNode.Items.Add(PEStaticBuilder.Pmx.MorphNodeItem(morphShadowDensP));
+pmx.ExpressionNode.Items.Add(PEStaticBuilder.Pmx.MorphNodeItem(morphShadowDensM));
+
+IPXBoneNodeItem lsCenterBoneItem = PEStaticBuilder.Pmx.BoneNodeItem(lsCenterBone);
+bool flag = false;
+for (int i = 0; i &lt; node.Count; i++)
+{
+    for (int j = 0; j &lt; node[i].Items.Count; j++)
+    {
+        if (node[i].Items[j].IsBone)
+        {
+            if (node[i].Items[j].BoneItem.Bone.Name == "頭")
+            {
+                node[i].Items.Insert(j + 1, lsCenterBoneItem);
+                flag = true;
+                break;
+            }
+        }
+    }
+    if (flag) break;
+}
+
+</CodeText>
+  <CodeHeader>//
+// ---- 簡易編集用ヘッダコード ----
+
+// 常用接続変数一括登録
+
+// ホスト配下
+IPEPluginHost host = args.Host;
+IPEBuilder builder = host.Builder;
+IPEShortBuilder bd = host.Builder.SC;		// 短絡系ビルダ
+IPXPmxBuilder bdx = host.Builder.Pmx;		// PMXビルダ
+IPEConnector connect = host.Connector;
+IPEPMDViewConnector view = host.Connector.View.PMDView;
+
+// PMX関連
+
+IPXPmx pmx = connect.Pmx.GetCurrentState();     // PMX取得
+IPXHeader header = pmx.Header;                  // header   :ヘッダ
+IPXModelInfo info = pmx.ModelInfo;              // info     :モデル情報
+IList&lt;IPXVertex&gt; vertex = pmx.Vertex;           // vertex   :頂点   | リスト
+IList&lt;IPXMaterial&gt; material = pmx.Material;     // material :材質   | リスト
+IList&lt;IPXBone&gt; bone = pmx.Bone;                 // bone     :ボーン | リスト
+IList&lt;IPXMorph&gt; morph = pmx.Morph;				// morph    :モーフ | リスト
+IList&lt;IPXNode&gt; node = pmx.Node;					// node     :表示枠 | リスト
+IList&lt;IPXBody&gt; body = pmx.Body;                 // body     :剛体   | リスト
+IList&lt;IPXJoint&gt; joint = pmx.Joint;              // joint    :Joint  | リスト
+
+
+/*
+// PMD関連
+
+IPEPmd pmd = connect.Pmd.GetCurrentState();         // PMD取得
+// IPEXPmd pex = connect.Pmd.GetCurrentStateEx();       // 拡張PMDを使う場合はコメント解除(拡張用データへの接続変数は未登録)
+
+IPEHeader header = pmd.Header;                  // header   :ヘッダ
+IList&lt;IPEVertex&gt; vertex = pmd.Vertex;           // vertex   :頂点   | リスト
+IList&lt;int&gt; face = pmd.Face;                     // face     :面     | リスト
+IList&lt;IPEMaterial&gt; material = pmd.Material;     // material :材質   | リスト
+IList&lt;IPEBone&gt; bone = pmd.Bone;                 // bone     :ボーン | リスト
+IList&lt;IPEIK&gt; ik = pmd.IK;                       // ik       :IK     | リスト
+IList&lt;IPEExpression&gt; exp = pmd.Expression;      // exp      :表情   | リスト
+
+IList&lt;int&gt; frameExp = pmd.FrameExpression;      // frameExp :表情枠 | リスト
+IList&lt;IPEFrameBone&gt; frameBone = pmd.FrameBone;  // frameBone:ボーン表示枠 | リスト
+
+string[] toon = pmd.ToonName;                   // toon     :Toon   | 配列
+
+IList&lt;IPEBody&gt; body = pmd.Body;                 // body     :剛体   | リスト
+IList&lt;IPEJoint&gt; joint = pmd.Joint;              // joint    :Joint  | リスト
+*/
+
+</CodeHeader>
+  <CodeFooter>//
+// ---- 簡易編集用フッタコード ----
+
+// 更新処理
+// デフォルト設定ではフッタコードはOFF
+
+// PMX更新
+connect.Pmx.Update(pmx);
+
+/*
+// PMD更新
+connect.Pmd.Update(pmd);
+//connect.Pmd.UpdateEx(pex);
+*/
+
+// Form更新
+connect.Form.UpdateList(UpdateObject.All);  // 重い場合は引数を変更して個別に更新
+
+// PMDView更新
+connect.View.PMDView.UpdateModel();         // Viewの更新が不要な場合はコメントアウト
+connect.View.PMDView.UpdateView();
+
+
+</CodeFooter>
+  <EnableHeader>true</EnableHeader>
+  <EnableFooter>true</EnableFooter>
+  <ActivePages>1</ActivePages>
+</CSScriptData>

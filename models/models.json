@@ -1,8 +1,16 @@
 {
   "models": [
+    "ruri/ruri_Default_003.pmx",
+    "natsuyuki_ruri_ver.1.1set/natsuyuki_hoshino_ruri_ver.1.1.pmx",
+    "natsuyuki_ruri_ver.1.1set/natsuyuki_neko_ruri_ver.1.1.pmx",
+    "natsuyuki_ruri_ver.1.1set/natsuyuki_tora_ruri_ver.1.1.pmx",
+    "natsuyuki_ruri_sailor_suit_ver.1.0/natsuyuki_ruri_sailor_suit_ver.1.0.pmx",
+    "nadesico/ナデシコ.pmx",
+    "natsuyuki_eve ver.3.0/natsuyuki_eve ver.3.0.pmx",
+    "natsuyuki_eve_v2.0/natsuyuki_eve_v2.0.pmx",
     "MoonaHoshinova/MoonaHoshinova_outeroff.pmx",
     "MoonaHoshinova/MoonaHoshinova.pmx",
-    "ruri/ruri_Default_003.pmx",
     "YukiYukari/結月ゆかり_純_ver1.0.pmd"
   ]
 }
+
