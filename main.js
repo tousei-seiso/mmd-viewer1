@@ -879,6 +879,7 @@ function clearDance() {
       danceState.audio.load(); // バッファを解放
     } catch (_) { /* 破棄時のエラーは無視 */ }
   }
+  mmdHelper.enable('physics', false); // 物理ゲートを必ずOFFにしてから外す
   if (danceState.mesh) {
     try { mmdHelper.remove(danceState.mesh); } catch (_) { /* 未登録なら無視 */ }
   }
@@ -931,27 +932,52 @@ function ensureAmmo() {
   return ammoReadyPromise;
 }
 
-// 現在ロード中のダンスへ、最新の physicsEnabled 設定を反映し直す。
-//   helper.add は物理オブジェクトを add 時に生成するため、ON/OFF 切替には remove→add が要る。
-//   音源の再生位置（currentTime）に mixer を合わせ直し、ガクつきを抑える。
-function reapplyPhysicsToCurrentDance() {
+// 物理ゲートを「現在あるべき状態」に同期する。
+//   ❗暴走対策の肝：物理を有効化する瞬間は必ず
+//     ① ゲートOFF（姿勢を動かす間、絶対に physics.update を走らせない）
+//     ② 現在の音源位置へボーン姿勢を確定（アニメ＋IKのみ）
+//     ③ physics.reset() で剛体を「今のボーン位置」へ強制スナップ
+//     ④ ここで初めてゲートON
+//   の順で行う。②の前にゲートをONのままだと、旧位置の剛体で拘束が暴れて体が崩壊する。
+//   さらに「再生中(playing)かつ physicsEnabled」のときだけONにする（停止中・ロード直後はOFF）。
+function syncPhysics(reposition = false) {
+  // ① まず必ずゲートOFF
+  mmdHelper.enable('physics', false);
+
+  if (!danceState.mesh) return;
+  const objData = mmdHelper.objects.get(danceState.mesh);
+  const physics = objData ? objData.physics : null;
+
+  // ② 必要なら現在の音源位置へボーン姿勢を確定（物理はゲートOFFなので走らない）
+  if (reposition && danceState.mixer) {
+    const t = danceState.audio ? danceState.audio.currentTime : 0;
+    danceState.mixer.setTime(t);
+    mmdHelper.update(0);
+    danceState.mesh.updateMatrixWorld(true);
+  }
+
+  // ③④ 再生中かつ物理ONのときだけ、剛体リセット→ゲートON でクリーンに開始
+  if (physicsEnabled && danceState.playing && physics && typeof physics.reset === 'function') {
+    danceState.mesh.updateMatrixWorld(true); // reset は matrixWorld を読むので最新化
+    physics.reset();
+    mmdHelper.enable('physics', true);
+  }
+}
+
+// physicsEnabled の ON/OFF が変わったとき、helper のエントリを作り直す。
+//   helper.add は add 時に物理オブジェクトを生成/破棄するため、ON/OFF 切替には remove→add が必要。
+//   作業中はゲートOFFを徹底し、最後に syncPhysics で安全に状態を合わせる。
+function rebuildDanceEntry() {
   if (!danceState.active || !danceState.mesh || !danceState.clip) return;
   const mesh = danceState.mesh;
   const t = danceState.audio ? danceState.audio.currentTime : 0;
+  mmdHelper.enable('physics', false);            // 作り直し中は物理を止める
   try { mmdHelper.remove(mesh); } catch (_) { /* 未登録なら無視 */ }
   mmdHelper.add(mesh, { animation: danceState.clip, physics: physicsEnabled });
   const objData = mmdHelper.objects.get(mesh);
   danceState.mixer = objData ? objData.mixer : null;
-  // 現在の音源位置へ合わせる（次フレーム以降は delta 同期で追従）
-  if (danceState.mixer) {
-    danceState.mixer.setTime(t);
-    mmdHelper.update(0); // 現在ポーズ＋IK を確定
-  }
-  // 物理 ON 化直後は剛体が初期姿勢(pose@0)のまま。現在ポーズへ剛体を再同期して
-  // 髪・スカートが一瞬飛び出す（爆発する）のを防ぐ。
-  if (physicsEnabled && objData && objData.physics && typeof objData.physics.reset === 'function') {
-    objData.physics.reset();
-  }
+  if (danceState.mixer) danceState.mixer.setTime(t); // 現在位置へ復帰
+  syncPhysics(true);                              // 姿勢確定→reset→（再生中なら）ゲートON
 }
 
 const physicsToggleBtn = document.getElementById('physics-toggle');
@@ -990,7 +1016,7 @@ async function togglePhysics() {
   }
 
   updatePhysicsButton(false);
-  reapplyPhysicsToCurrentDance(); // 再生中のダンスへ即時反映
+  rebuildDanceEntry(); // 物理オブジェクトを作り直し、暴走しない順序で状態を反映
 }
 
 physicsToggleBtn?.addEventListener('click', () => { togglePhysics(); });
@@ -1068,11 +1094,14 @@ async function loadDance(entry) {
     danceState.audio = audio;
     danceState.clip = clip;
 
-    // 先頭フレームの姿勢を反映しておく（再生前でも踊りの構えになる）
+    // ロード直後は物理を必ずOFF（point3）。先頭フレームの姿勢だけ反映しておく
+    // （再生前でも踊りの構えになる）。物理は再生ボタンが押された瞬間にクリーン開始する。
+    mmdHelper.enable('physics', false);
     if (danceState.mixer) {
       danceState.mixer.setTime(0);
       mmdHelper.update(0);
     }
+    syncPhysics(); // playing=false なのでゲートOFFのまま（停止中は物理スリープ）
 
     setNowPlaying(`🎵 選択中: ${entry.name}`);
     updateDancePlayButton();
@@ -1085,29 +1114,35 @@ async function loadDance(entry) {
   }
 }
 
-// 音源が最後まで再生され終わったら、再生ボタンを「▶️（停止中）」へ戻す
+// 音源が最後まで再生され終わったら、再生ボタンを「▶️（停止中）」へ戻し、物理もスリープ
 function onAudioEnded() {
   danceState.playing = false;
   updateDancePlayButton();
+  syncPhysics(); // 停止中は物理ゲートOFF
 }
 
 // --- 再生／一時停止トグル ----------------------------------------------------
 function toggleDancePlayback() {
   if (!danceState.active || !danceState.audio) return;
   if (danceState.playing) {
+    // 一時停止：物理もスリープさせる（停止中は剛体を進めない）
     danceState.audio.pause();
     danceState.playing = false;
     updateDancePlayButton();
+    syncPhysics(); // ゲートOFF
   } else {
-    // ボタンのタップ＝ユーザー操作なので、ここからの再生はモバイルでも許可される
-    const p = danceState.audio.play();
+    // 再生開始：物理ONなら「現在姿勢で剛体リセット→ゲートON」をこの瞬間に行う（クリーン開始）
     danceState.playing = true;
     updateDancePlayButton();
+    syncPhysics(); // physicsEnabled && playing → reset してゲートON
+    // ボタンのタップ＝ユーザー操作なので、ここからの再生はモバイルでも許可される
+    const p = danceState.audio.play();
     if (p && typeof p.catch === 'function') {
       p.catch((err) => {
         console.warn('音源の再生に失敗しました:', err);
         danceState.playing = false;
         updateDancePlayButton();
+        syncPhysics(); // 再生に失敗したら物理も止める
       });
     }
   }
