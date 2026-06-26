@@ -744,8 +744,15 @@ modelDialog?.addEventListener('click', (event) => {
 
 // 揺らしたい部位のキーワード（英字は小文字で比較）
 const SWAY_KEYWORDS = ['髪', 'hair', 'スカート', 'skirt', '袖', 'sleeve', '裾', 'リボン', 'ribbon', 'ひも'];
-// 体幹など、絶対に揺らさないボーン（安全のための除外）
-const SWAY_EXCLUDE = ['センター', 'center', '下半身', '上半身', '足', 'ひざ', '足首', 'つま先', 'body', 'グルーブ'];
+// 体幹など、絶対に揺らさない／物理に渡さないボーン（安全のための除外）。
+//   足・体幹に加え、足捩(あしよじり)・ひざ多段・補助/補正などの「変形連動(付与)用の特殊ボーン」も
+//   除外する。これらに動的剛体があると、物理に引かれて太もも・すねが骨折したように歪むため、
+//   揺れもの判定からも物理対象からも完全に外す（アニメ＋IK＋付与で正しく動かす）。
+const SWAY_EXCLUDE = [
+  'センター', 'center', '下半身', '上半身', '足', 'ひざ', '足首', 'つま先', 'body', 'グルーブ',
+  // ↓ 時祭りイヴ等の特殊な補助ボーン（再生中の足の捩れ・歪みの原因）を物理から除外
+  '捩', 'よじり', 'twist', '補助', '多段', '補正', 'インターポレート', 'interpolate', 'ＩＫ',
+];
 
 // 重力を除いた加速度（動きだけ）。減衰しながら保持する揺れ量ベクトル。
 let accX = 0, accY = 0, accZ = 0;
@@ -881,6 +888,9 @@ function clearDance() {
   }
   mmdHelper.enable('physics', false); // 物理ゲートを必ずOFFにしてから外す
   if (danceState.mesh) {
+    // helper から外す前に、全ボーンをバインドポーズへ戻す。曲変更で同じモデルが残る場合に、
+    // 前の曲の補助ボーン（足捩り等）の歪みを持ち越さないため。
+    resetMeshPose(danceState.mesh);
     try { mmdHelper.remove(danceState.mesh); } catch (_) { /* 未登録なら無視 */ }
   }
   danceState.active = false;
@@ -1004,6 +1014,21 @@ function forceEnableAllIK(mesh) {
   for (const ik of iks) {
     for (const link of ik.links) link.enabled = true;
   }
+}
+
+// 全ボーンをバインドポーズ（初期姿勢）へ完全リセットする。
+//   再生終了・曲/モデル変更時に呼び、モーションで書き換えられた補助ボーン（足捩り等）の
+//   変形が残らないようにする。pose() で全ボーンを初期化し、物理剛体も初期位置へ引き戻す。
+//   ※ animate は playing=false の間ダンスを再適用しないため、この姿勢はそのまま保持される。
+function resetMeshPose(mesh) {
+  if (!mesh || typeof mesh.pose !== 'function') return;
+  mesh.pose();                       // 全ボーン（補助・捩りボーン含む）をバインドポーズへ
+  mesh.updateMatrixWorld(true);
+  const objData = mmdHelper.objects.get(mesh);
+  if (objData && objData.physics && typeof objData.physics.reset === 'function') {
+    objData.physics.reset();         // 歪んだ剛体を初期位置へカチッと戻す
+  }
+  swayBones = null;                  // 簡易 sway の基準姿勢をバインドポーズで取り直す
 }
 
 // 物理ゲートを「現在あるべき状態」に同期する。
@@ -1204,11 +1229,14 @@ async function loadDance(entry) {
   }
 }
 
-// 音源が最後まで再生され終わったら、再生ボタンを「▶️（停止中）」へ戻し、物理もスリープ
+// 音源が最後まで再生され終わったら、再生ボタンを「▶️（停止中）」へ戻し、物理もスリープし、
+// 全ボーンをバインドポーズへリセットして（足捩り等の補助ボーンの歪み残りを解消）綺麗に直立させる。
 function onAudioEnded() {
   danceState.playing = false;
   updateDancePlayButton();
-  syncPhysics(); // 停止中は物理ゲートOFF
+  syncPhysics();                       // 停止中は物理ゲートOFF
+  resetMeshPose(danceState.mesh);      // 全ボーンを初期姿勢へ → IK/物理も初期位置へ引き戻す
+  try { if (danceState.audio) danceState.audio.currentTime = 0; } catch (_) {} // 次回は頭から
 }
 
 // --- 再生／一時停止トグル ----------------------------------------------------
@@ -1221,10 +1249,11 @@ function toggleDancePlayback() {
     updateDancePlayButton();
     syncPhysics(); // ゲートOFF
   } else {
-    // 再生開始：物理ONなら「現在姿勢で剛体リセット→ゲートON」をこの瞬間に行う（クリーン開始）
+    // 再生開始／再開：まず現在の音源位置の踊り姿勢へ復帰させてから（終了後のバインドポーズや
+    // 一時停止位置から確実に踊りへ戻す）、物理ONなら剛体リセット→ゲートONをクリーンに行う。
     danceState.playing = true;
     updateDancePlayButton();
-    syncPhysics(); // physicsEnabled && playing → reset してゲートON
+    syncPhysics(true); // 現在位置へ姿勢確定 → physicsEnabled なら reset してゲートON
     // ボタンのタップ＝ユーザー操作なので、ここからの再生はモバイルでも許可される
     const p = danceState.audio.play();
     if (p && typeof p.catch === 'function') {
@@ -1449,9 +1478,11 @@ function animate() {
   //   delta = audio.currentTime − mixer.time を渡せば、ミキサー時刻がちょうど音源時刻に
   //   一致する（＝強制同期）。setTime + update(0) では _restoreBones に姿勢を打ち消され、
   //   delta=0 で再適用されず固まるため、必ず差分を渡して update する。
-  //   一時停止中は currentTime が止まり delta=0 となり、その時点の姿勢を保持する。
+  //   再生中(playing)のときだけ適用する。停止・一時停止・終了時は更新を止め、その時点の
+  //   姿勢（停止＝直前の踊り、終了＝バインドポーズへリセット済み）をそのまま保持する。
+  //   これにより、再生終了後に補助ボーンが歪んだまま再適用され続けるのを防ぐ。
   let danceUpdatedThisFrame = false;
-  if (danceState.active && danceState.mesh === currentModel && danceState.mixer && danceState.audio) {
+  if (danceState.active && danceState.playing && danceState.mesh === currentModel && danceState.mixer && danceState.audio) {
     const delta = danceState.audio.currentTime - danceState.mixer.time;
     mmdHelper.update(delta);
     danceUpdatedThisFrame = true;
