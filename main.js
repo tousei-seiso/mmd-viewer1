@@ -964,18 +964,22 @@ function syncPhysics(reposition = false) {
   }
 }
 
-// physicsEnabled の ON/OFF が変わったとき、helper のエントリを作り直す。
-//   helper.add は add 時に物理オブジェクトを生成/破棄するため、ON/OFF 切替には remove→add が必要。
-//   作業中はゲートOFFを徹底し、最後に syncPhysics で安全に状態を合わせる。
-function rebuildDanceEntry() {
+// 現在のダンスに「物理オブジェクト」がまだ無ければ、一度だけ remove→add で生成する。
+//   ❗remove は剛体を破棄せず・姿勢も戻さないため、再生中に繰り返すと warmup が変形姿勢から
+//     再実行され崩壊が累積する。よって作り直しは「未生成のとき1回だけ」に限定する。
+//     初回 ON 時点では物理は未稼働＝ボーンはアニメ由来のクリーンな姿勢なので安全に warmup できる。
+function ensurePhysicsObject() {
   if (!danceState.active || !danceState.mesh || !danceState.clip) return;
+  const objData = mmdHelper.objects.get(danceState.mesh);
+  if (objData && objData.physics) return; // 既に物理オブジェクトがある → 作り直さない
+
   const mesh = danceState.mesh;
   const t = danceState.audio ? danceState.audio.currentTime : 0;
-  mmdHelper.enable('physics', false);            // 作り直し中は物理を止める
+  mmdHelper.enable('physics', false);            // 生成中は物理を止める
   try { mmdHelper.remove(mesh); } catch (_) { /* 未登録なら無視 */ }
-  mmdHelper.add(mesh, { animation: danceState.clip, physics: physicsEnabled });
-  const objData = mmdHelper.objects.get(mesh);
-  danceState.mixer = objData ? objData.mixer : null;
+  mmdHelper.add(mesh, { animation: danceState.clip, physics: true });
+  const newObj = mmdHelper.objects.get(mesh);
+  danceState.mixer = newObj ? newObj.mixer : null;
   if (danceState.mixer) danceState.mixer.setTime(t); // 現在位置へ復帰
   syncPhysics(true);                              // 姿勢確定→reset→（再生中なら）ゲートON
 }
@@ -1011,12 +1015,17 @@ async function togglePhysics() {
     }
     physicsEnabled = true;
     setNowPlaying(prevText || '🎵 モーション未選択');
+    updatePhysicsButton(false);
+    // 物理オブジェクトが未生成なら「このときだけ」1回生成（クリーンな姿勢で warmup）。
+    // 既にあればゲート操作だけで反映し、warmup の再実行＝崩壊累積を避ける。
+    ensurePhysicsObject();
+    syncPhysics(); // 再生中なら reset→ゲートON、停止中はOFFのまま
   } else {
+    // OFF 化：作り直さず、物理ゲートを閉じるだけ（剛体は破棄せず保持＝次回ONが安全・安価）。
     physicsEnabled = false;
+    updatePhysicsButton(false);
+    syncPhysics(); // ゲートOFF。簡易 sway が再開する
   }
-
-  updatePhysicsButton(false);
-  rebuildDanceEntry(); // 物理オブジェクトを作り直し、暴走しない順序で状態を反映
 }
 
 physicsToggleBtn?.addEventListener('click', () => { togglePhysics(); });
