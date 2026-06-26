@@ -1,0 +1,14 @@
+{
+  "motions": [
+    {
+      "name": "jump up",
+      "vmd": "jump up/JUMP UP.vmd",
+      "audio": "jump up/jump up.mp3"
+    },
+    {
+      "name": "jump up light",
+      "vmd": "jump up/JUMP UP_Light.vmd",
+      "audio": "jump up/jump up.mp3"
+    }
+  ]
+}
