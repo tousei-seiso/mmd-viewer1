@@ -177,37 +177,50 @@ function disposeModel(obj) {
 }
 
 // -----------------------------------------------------------------------------
-// 足IKの安定化（低等身モデルでの足首暴走・ひざ不動バグ対策）
-//   ホシノルリのような小柄なモデルに大柄なモーションを当てると、CCDIKSolver が収束しきれず
-//   「ひざがわずかにしか曲がらず、足首(つま先IK)が暴走して回る」破綻が起きる。原因は2つ:
-//     ① PMX のひざIKは rotationMin/Max で制限されるが、座標変換が絡み不安定で曲がりきらない
-//        （MMDLoader 内に「うまく効かなければ limitation に戻せ」という注記がある）。
-//     ② 反復回数(iteration)が proportions に対して不足し、ひざが収束しない。
-//   対策：ひざIKリンクを「X軸の片方向曲げ(limitation)」へ固定（PMD と同じ堅牢方式）し、
-//   かつ脚IK(ひざを含むIK)の反復回数を底上げする。つま先IKは触らない（暴走増幅を避ける）。
-//   ※ この iks 配列は CCDIKSolver と pmxAnimation 経路の両方が同じ参照を使うため、
-//     ソルバ生成前のモデル読込時に一度書き換えれば両方へ効く。
+// 足IK修正：移動付与(translation grant)で駆動される脚IKのターゲットを再ポイントする
+//   natsuyuki_ruri 系などは、脚IKが「IK親＋付与チェーン」で構成される:
+//     左足ＩＫ(VMDがアニメ) → s1[移動付与] → s2[回転付与] → 左足ＩＫd(IKソルバ)
+//   IKソルバ(左足ＩＫd)のターゲット位置は s1 の「移動付与」で左足ＩＫから伝わる設計だが、
+//   Three.js の MMDAnimationHelper は移動付与を実装していない（回転付与のみ）。そのため
+//   左足ＩＫd が動かず、足が地面から持ち上がらない。
+//   さらに _restoreBones/_saveBones の仕組みで、付与結果を毎フレーム外から書いても上書き
+//   されるため、付与を自前計算する方法は使えない。
+//   → 解決：IK ターゲットを「実際に VMD がアニメする元IKボーン(左足ＩＫ)」へ張り替える。
+//     これで CCDIKSolver が正しい目標位置を読み、足が持ち上がる。
+//   ※ 直結IK（左足ＩＫ自体がソルバ＝ruri_Default やイヴ）は付与チェーンが無いので無変更。
+//   ※ iks 配列は CCDIKSolver と pmxAnimation 経路で同じ参照を使うため、ソルバ生成前の
+//     モデル読込時に一度書き換えれば両経路へ効く。
 function tuneModelIK(mesh) {
   const mmd = mesh.geometry && mesh.geometry.userData && mesh.geometry.userData.MMD;
   const iks = mmd && mmd.iks;
-  const bones = mmd && mmd.bones;
+  const bones = mmd && mmd.bones; // ボーン定義データ（grant / parent / name を持つ）
   if (!iks || !bones) return;
 
+  let retargeted = 0;
   for (const ik of iks) {
-    let hasKnee = false;
-    for (const link of ik.links) {
-      const name = (bones[link.index] && bones[link.index].name) || '';
-      if (name.includes('ひざ') || name.includes('膝') || name.toLowerCase().includes('knee')) {
-        hasKnee = true;
-        // ひざは常に X 軸の片方向にだけ曲げる（過伸展・暴走を防ぐ堅牢な制約）。
-        link.limitation = new THREE.Vector3(1, 0, 0);
-        delete link.rotationMin; // 不安定な角度制限は撤去し、limitation に一本化
-        delete link.rotationMax;
-      }
+    // 対象は「ひざを含む脚IK」のみ（腕・髪・スカート・つま先IK等は触らない＝安全）。
+    const hasKnee = ik.links.some((l) => {
+      const n = (bones[l.index] && bones[l.index].name) || '';
+      return n.includes('ひざ') || n.includes('膝') || n.toLowerCase().includes('knee');
+    });
+    if (!hasKnee) continue;
+
+    // ik.target は MMDLoader では「IKボーン自身の index」。そこから親を辿り、
+    // 移動付与(affectPosition)を持つボーンが見つかれば、その付与元が本来の目標位置。
+    const ikBoneIndex = ik.target;
+    let probe = ikBoneIndex;
+    let source = -1;
+    for (let depth = 0; depth < 8 && probe >= 0 && bones[probe]; depth++) {
+      const g = bones[probe].grant;
+      if (g && g.affectPosition && g.parentIndex >= 0) { source = g.parentIndex; break; }
+      probe = bones[probe].parent;
     }
-    // ひざを含む＝脚IK。収束を確実にするため反復回数を底上げ（つま先IK等は据え置き）。
-    if (hasKnee) ik.iteration = Math.max(ik.iteration || 1, 40);
+    if (source >= 0 && source !== ikBoneIndex) {
+      ik.target = source; // VMDがアニメする元IKボーンへ張り替え → 足が持ち上がる
+      retargeted++;
+    }
   }
+  if (retargeted) console.log(`足IK修正: 移動付与駆動の脚IK ${retargeted} 件をターゲット再ポイント`);
 }
 
 // 読み込んだメッシュをシーンへ適用する。既存モデルがあれば差し替える。
