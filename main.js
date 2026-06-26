@@ -5,6 +5,7 @@
 
 import * as THREE from 'three';
 import { MMDLoader } from 'three/addons/loaders/MMDLoader.js';
+import { MMDAnimationHelper } from 'three/addons/animation/MMDAnimationHelper.js';
 
 // -----------------------------------------------------------------------------
 // 設定値
@@ -153,6 +154,9 @@ async function loadModelWithFallback(paths) {
 // 現在シーンに表示しているモデルと、その読み込みパス（差し替え時に使う）
 let currentModel = null;
 let currentModelPath = null;
+// モデルが「ダンス再生に使える状態」かどうか（読み込み完了で true）。
+// 再生ボタンの有効／無効判定（モデルとモーションが揃ったか）に使う。
+let modelReady = false;
 
 // モデルの GPU リソースを解放する（差し替え時のメモリリーク防止）
 function disposeModel(obj) {
@@ -176,6 +180,9 @@ function disposeModel(obj) {
 // モデルは地面に立たせたまま固定（位置・向きは動かさない）。動くのはカメラの視点だけ。
 function applyModel(mesh, path) {
   if (currentModel) {
+    // 旧モデルに紐づくダンス（VMD クリップ＋音源）を確実に停止・破棄してから差し替える。
+    // クリップは旧モデルのスケルトンに束縛されているため、ここで一旦リセットする。
+    clearDance();
     scene.remove(currentModel);
     disposeModel(currentModel);
   }
@@ -186,11 +193,16 @@ function applyModel(mesh, path) {
   currentModelPath = path;
   // 新しいモデルに対して揺れもの対象ボーンを再抽出させる（次フレームの ensureSwayBones で再構築）
   swayBones = null;
+  modelReady = true;
+  updateDancePlayButton(); // モデルが揃ったので再生ボタンの有効／無効を更新
   console.log(`モデルを読み込みました: ${path}`);
 }
 
 // 指定パスのモデルへ切り替える（ユーザーがダイアログから選択したとき）
 async function switchModel(path) {
+  // 切り替え中はモデル未準備として再生ボタンを無効化する
+  modelReady = false;
+  updateDancePlayButton();
   setStatus(`読み込んでいます… ${path.split('/').pop()}`);
   try {
     const mesh = await loadModel(path);
@@ -798,6 +810,350 @@ function ensureSwayBones() {
   }
 }
 
+// =============================================================================
+// ダンスモーション（VMD）＋ 楽曲（MP3）の選択・読み込み・同期再生
+//   ・motions/<曲名>/ に dance.vmd と music.mp3 を 1 セットで配置する想定。
+//   ・MMDAnimationHelper で VMD を再生する（スマホ負荷対策で物理演算 physics は false）。
+//   ・音ズレ対策として、描画ループ内で Audio.currentTime を MMD のミキサーへ
+//     強制同期する（mixer.setTime → helper.update(0)）。FPS が落ちても音と踊りが
+//     ズレない。
+//   ・モデル／楽曲を切り替えるときは、必ず音源を pause() して破棄・リセットする。
+// -----------------------------------------------------------------------------
+
+const MOTION_DIR = 'motions/';
+const MOTION_MANIFEST = 'motions/motions.json';
+const MOTION_VMD_EXT = '.vmd';
+const MOTION_AUDIO_EXTS = ['.mp3', '.m4a', '.aac', '.ogg', '.wav'];
+const MOTION_DEFAULT_VMD = 'dance.vmd';   // フォルダ名のみ与えられた場合の既定
+const MOTION_DEFAULT_AUDIO = 'music.mp3';
+
+// MMD モーション再生を司るヘルパー（物理演算なしで使う）。モデルとは独立に存在する。
+const mmdHelper = new MMDAnimationHelper();
+
+// 現在ロード中／再生中のダンス状態。1 つだけ保持する。
+const danceState = {
+  active: false,   // VMD クリップがモデルへ適用済みか（再生・一時停止を問わない）
+  playing: false,  // 音源が再生中か
+  loading: false,  // 読み込み中（多重ロード防止）
+  name: null,      // 表示用の曲名
+  mesh: null,      // クリップを適用したモデル（差し替え検知用）
+  mixer: null,     // helper が内部生成した AnimationMixer（強制同期に使う）
+  audio: null,     // HTML5 Audio オブジェクト
+};
+
+const motionPickerBtn = document.getElementById('motion-picker-toggle');
+const motionDialog = document.getElementById('motion-dialog');
+const motionListEl = document.getElementById('motion-list');
+const motionDialogClose = document.getElementById('motion-dialog-close');
+const dancePlayBtn = document.getElementById('dance-play-toggle');
+const nowPlayingEl = document.getElementById('now-playing');
+
+// --- 画面最上部中央のステータス表示 -----------------------------------------
+function setNowPlaying(text) {
+  if (nowPlayingEl) nowPlayingEl.textContent = text;
+}
+
+// --- 再生ボタンの状態（有効／無効・アイコン）を一括更新 ----------------------
+//   モデルとモーションの両方が揃うまでは disabled（CSS で半透明・タップ不可）。
+function updateDancePlayButton() {
+  if (!dancePlayBtn) return;
+  const ready = modelReady && danceState.active;
+  dancePlayBtn.disabled = !ready;
+  dancePlayBtn.setAttribute('aria-pressed', String(danceState.playing));
+  dancePlayBtn.textContent = danceState.playing ? '⏸️' : '▶️';
+  dancePlayBtn.title = danceState.playing ? 'ダンスを一時停止' : 'ダンスを再生';
+}
+
+// --- ダンスの完全クリーンアップ（音源停止・破棄＋クリップ解除＋状態リセット） --
+//   モデル切り替え・楽曲切り替えの前に必ず呼び、音が鳴り続けたり多重再生になるのを防ぐ。
+function clearDance() {
+  if (danceState.audio) {
+    try {
+      danceState.audio.pause();
+      danceState.audio.removeAttribute('src');
+      danceState.audio.load(); // バッファを解放
+    } catch (_) { /* 破棄時のエラーは無視 */ }
+  }
+  if (danceState.mesh) {
+    try { mmdHelper.remove(danceState.mesh); } catch (_) { /* 未登録なら無視 */ }
+  }
+  danceState.active = false;
+  danceState.playing = false;
+  danceState.name = null;
+  danceState.mesh = null;
+  danceState.mixer = null;
+  danceState.audio = null;
+  updateDancePlayButton();
+}
+
+// --- VMD アニメーションを Promise で読み込むラッパー -------------------------
+function loadAnimationClip(url, mesh) {
+  return new Promise((resolve, reject) => {
+    loader.loadAnimation(url, mesh, resolve, undefined, reject);
+  });
+}
+
+// --- HTML5 Audio を「再生可能」になるまで待って返す -------------------------
+function loadAudio(url) {
+  return new Promise((resolve, reject) => {
+    const audio = new Audio();
+    audio.preload = 'auto';
+    const onReady = () => { cleanup(); resolve(audio); };
+    const onError = () => { cleanup(); reject(new Error(`音源を読み込めません: ${url}`)); };
+    function cleanup() {
+      audio.removeEventListener('canplaythrough', onReady);
+      audio.removeEventListener('loadeddata', onReady);
+      audio.removeEventListener('error', onError);
+    }
+    audio.addEventListener('canplaythrough', onReady, { once: true });
+    audio.addEventListener('loadeddata', onReady, { once: true }); // 保険（端末差）
+    audio.addEventListener('error', onError, { once: true });
+    audio.src = url;
+    audio.load();
+  });
+}
+
+// --- 選択された曲（VMD＋音源）をロードしてモデルへ適用 ----------------------
+async function loadDance(entry) {
+  if (danceState.loading) return;
+  if (!currentModel || !modelReady) {
+    setNowPlaying('🎵 先にモデルを読み込んでください');
+    return;
+  }
+  const mesh = currentModel;
+  danceState.loading = true;
+  // 読み込み中はいったん既存ダンスを片付け、再生ボタンを無効化する
+  clearDance();
+  setNowPlaying(`⏳ ${entry.name} と音源を読み込み中...`);
+
+  const vmdUrl = MOTION_DIR + entry.vmd;
+  const audioUrl = MOTION_DIR + entry.audio;
+
+  try {
+    // VMD クリップと音源を並行して読み込む
+    const [clip, audio] = await Promise.all([
+      loadAnimationClip(vmdUrl, mesh),
+      loadAudio(audioUrl),
+    ]);
+
+    // 読み込み中にモデルが差し替わっていたら破棄（古い mesh 用クリップは使えない）
+    if (mesh !== currentModel) {
+      try { audio.pause(); } catch (_) {}
+      danceState.loading = false;
+      return;
+    }
+
+    // スマホ負荷対策：物理演算 false で適用（揺れものは既存の簡易 sway が担当）
+    mmdHelper.add(mesh, { animation: clip, physics: false });
+    const objData = mmdHelper.objects.get(mesh);
+
+    audio.addEventListener('ended', onAudioEnded);
+
+    danceState.active = true;
+    danceState.playing = false;
+    danceState.name = entry.name;
+    danceState.mesh = mesh;
+    danceState.mixer = objData ? objData.mixer : null;
+    danceState.audio = audio;
+
+    // 先頭フレームの姿勢を反映しておく（再生前でも踊りの構えになる）
+    if (danceState.mixer) {
+      danceState.mixer.setTime(0);
+      mmdHelper.update(0);
+    }
+
+    setNowPlaying(`🎵 選択中: ${entry.name}`);
+    updateDancePlayButton();
+  } catch (error) {
+    console.error('ダンスの読み込みに失敗しました:', error);
+    clearDance();
+    setNowPlaying(`⚠️ 読み込めませんでした: ${entry.name}`);
+  } finally {
+    danceState.loading = false;
+  }
+}
+
+// 音源が最後まで再生され終わったら、再生ボタンを「▶️（停止中）」へ戻す
+function onAudioEnded() {
+  danceState.playing = false;
+  updateDancePlayButton();
+}
+
+// --- 再生／一時停止トグル ----------------------------------------------------
+function toggleDancePlayback() {
+  if (!danceState.active || !danceState.audio) return;
+  if (danceState.playing) {
+    danceState.audio.pause();
+    danceState.playing = false;
+    updateDancePlayButton();
+  } else {
+    // ボタンのタップ＝ユーザー操作なので、ここからの再生はモバイルでも許可される
+    const p = danceState.audio.play();
+    danceState.playing = true;
+    updateDancePlayButton();
+    if (p && typeof p.catch === 'function') {
+      p.catch((err) => {
+        console.warn('音源の再生に失敗しました:', err);
+        danceState.playing = false;
+        updateDancePlayButton();
+      });
+    }
+  }
+}
+
+dancePlayBtn?.addEventListener('click', toggleDancePlayback);
+
+// --- モーション一覧の取得（マニフェスト → ディレクトリ走査） ----------------
+//   返り値は { name, vmd, audio } の配列（vmd/audio は motions/ からの相対パス）。
+//   models 側と同じ思想：GitHub Pages では motions/motions.json が必須、autoindex
+//   が使えるローカルサーバではディレクトリ走査でも拾える。
+
+function isVmdFile(name) {
+  return name.toLowerCase().endsWith(MOTION_VMD_EXT);
+}
+function isAudioFile(name) {
+  const lower = name.toLowerCase();
+  return MOTION_AUDIO_EXTS.some((ext) => lower.endsWith(ext));
+}
+
+// マニフェストの 1 要素を { name, vmd, audio } へ正規化する。
+//   許容形式: "曲名"（フォルダ名のみ）/ { name, vmd, audio } / { name, dir }
+function normalizeMotionEntry(item) {
+  if (typeof item === 'string') {
+    const folder = item.replace(/^\.?\/*/, '').replace(/^motions\//, '').replace(/\/+$/, '');
+    if (!folder) return null;
+    return { name: folder, vmd: `${folder}/${MOTION_DEFAULT_VMD}`, audio: `${folder}/${MOTION_DEFAULT_AUDIO}` };
+  }
+  if (item && typeof item === 'object') {
+    const clean = (p) => typeof p === 'string' ? p.replace(/^\.?\/*/, '').replace(/^motions\//, '') : null;
+    const dir = clean(item.dir)?.replace(/\/+$/, '');
+    const vmd = clean(item.vmd) || (dir ? `${dir}/${MOTION_DEFAULT_VMD}` : null);
+    const audio = clean(item.audio) || (dir ? `${dir}/${MOTION_DEFAULT_AUDIO}` : null);
+    if (!vmd || !audio) return null;
+    const name = item.name || dir || vmd.split('/')[0];
+    return { name, vmd, audio };
+  }
+  return null;
+}
+
+async function loadMotionManifest() {
+  try {
+    const res = await fetch(MOTION_MANIFEST, { headers: { Accept: 'application/json' } });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const list = Array.isArray(data) ? data : data?.motions;
+    if (!Array.isArray(list)) return null;
+    const cleaned = list.map(normalizeMotionEntry).filter(Boolean);
+    return cleaned.length ? cleaned : null;
+  } catch (error) {
+    console.warn('motions.json を読み込めませんでした。', error);
+    return null;
+  }
+}
+
+// motions/ 直下の各サブフォルダを走査し、.vmd と音源ファイルが揃うフォルダを拾う。
+async function crawlMotionFolders() {
+  const results = [];
+  let top;
+  try {
+    top = await readDirIndex(MOTION_DIR); // models 側と同じ index 解析を再利用
+  } catch (error) {
+    return results; // autoindex 非対応（GitHub Pages 等）
+  }
+  for (const dir of top.dirs) {
+    let entry;
+    try {
+      entry = await readDirIndexAny(`${MOTION_DIR}${dir}/`);
+    } catch (_) {
+      continue;
+    }
+    const vmd = entry.files.find(isVmdFile);
+    const audio = entry.files.find(isAudioFile);
+    if (vmd && audio) {
+      results.push({ name: dir, vmd: `${dir}/${vmd}`, audio: `${dir}/${audio}` });
+    }
+  }
+  return results.sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+}
+
+// readDirIndex は .pmx/.pmd しか files に入れないため、モーション用に全ファイルを返す版。
+async function readDirIndexAny(dirUrl) {
+  const files = [];
+  const dirs = [];
+  const res = await fetch(dirUrl, { headers: { Accept: 'text/html' } });
+  if (!res.ok) return { files, dirs };
+  const html = await res.text();
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.querySelectorAll('a[href]').forEach((a) => {
+    let href = (a.getAttribute('href') || '').split('?')[0].split('#')[0];
+    if (!href || href.startsWith('/') || href.includes('://')) return;
+    const isDir = href.endsWith('/');
+    let name = href.replace(/\/+$/, '');
+    name = name.split('/').pop() || '';
+    if (name === '' || name === '.' || name === '..') return;
+    try { name = decodeURIComponent(name); } catch { /* そのまま */ }
+    if (isDir) dirs.push(name); else files.push(name);
+  });
+  return { files, dirs };
+}
+
+async function listMotions() {
+  const fromManifest = await loadMotionManifest();
+  if (fromManifest && fromManifest.length) return fromManifest;
+  return await crawlMotionFolders();
+}
+
+// --- モーション選択ダイアログ（🎵 アイコン） --------------------------------
+function closeMotionDialog() {
+  motionDialog?.classList.add('hidden');
+  motionPickerBtn?.setAttribute('aria-expanded', 'false');
+}
+
+async function openMotionDialog() {
+  if (!motionDialog || !motionListEl) return;
+  motionDialog.classList.remove('hidden');
+  motionPickerBtn?.setAttribute('aria-expanded', 'true');
+  motionListEl.innerHTML = '<li class="model-list-empty">読み込み中…</li>';
+
+  const motions = await listMotions();
+  if (motionDialog.classList.contains('hidden')) return; // 取得中に閉じられた
+
+  motionListEl.innerHTML = '';
+  if (!motions.length) {
+    motionListEl.innerHTML = '<li class="model-list-empty">モーションが見つかりません</li>';
+    return;
+  }
+  for (const entry of motions) {
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'model-list-item'; // ダイアログ項目のスタイルを共用
+    btn.textContent = entry.name;
+    if (danceState.name === entry.name) btn.classList.add('is-current');
+    btn.addEventListener('click', () => {
+      closeMotionDialog();
+      loadDance(entry);
+    });
+    li.appendChild(btn);
+    motionListEl.appendChild(li);
+  }
+}
+
+if (motionPickerBtn) {
+  motionPickerBtn.addEventListener('click', () => {
+    if (motionDialog && !motionDialog.classList.contains('hidden')) closeMotionDialog();
+    else openMotionDialog();
+  });
+}
+motionDialogClose?.addEventListener('click', closeMotionDialog);
+motionDialog?.addEventListener('click', (event) => {
+  if (event.target === motionDialog) closeMotionDialog();
+});
+
+// 起動時の初期表示
+updateDancePlayButton();
+setNowPlaying('🎵 モーション未選択');
+
 // -----------------------------------------------------------------------------
 // 描画ループ
 // -----------------------------------------------------------------------------
@@ -848,6 +1204,18 @@ function animate() {
   // 姿勢を直接適用（lookAt は使わない＝Roll の傾きが打ち消されないようにするため）
   camera.quaternion.copy(_camQuat);
 
+  // --- ダンス（VMD）と音源の強制同期 -------------------------------------------
+  //   スマホで FPS が落ちても音と踊りがズレないよう、毎フレーム Audio の再生時間を
+  //   MMD ミキサーへ直接合わせる（経過時間ベースで進めない）。helper.update(0) は
+  //   時間を進めずに IK 等の補正と姿勢確定だけを行う。一時停止中も currentTime は
+  //   止まったままなので、その時点の姿勢を保持できる。
+  let danceUpdatedThisFrame = false;
+  if (danceState.active && danceState.mesh === currentModel && danceState.mixer && danceState.audio) {
+    danceState.mixer.setTime(danceState.audio.currentTime);
+    mmdHelper.update(0);
+    danceUpdatedThisFrame = true;
+  }
+
   // --- 簡易揺れもの（フェイク物理）---------------------------------------------
   // ここは「モーション（VMD）が更新された直後」に相当する位置。モーション適用後の
   // ボーン角度に対して相対的に += するため、再生中の踊りを上書きして消さない。
@@ -862,11 +1230,19 @@ function animate() {
     const offX = clamp(-swayZ * SWAY_ROT_FACTOR, -SWAY_ROT_MAX, SWAY_ROT_MAX);
     const offZ = clamp(-swayX * SWAY_ROT_FACTOR, -SWAY_ROT_MAX, SWAY_ROT_MAX);
     for (const b of swayBones) {
-      // 「基準姿勢 ＋ 減衰オフセット」を絶対指定。offX/Z は加速度が止まると 0 へ
-      // 減衰するので、ボーンは基準姿勢（rest）へ自然に戻る（スプリングバック）。
       const factor = Math.pow(0.5, b.depth ?? 0);
-      b.bone.rotation.x = b.restX + offX * factor;
-      b.bone.rotation.z = b.restZ + offZ * factor;
+      if (danceUpdatedThisFrame) {
+        // ダンス再生中：helper が今フレームの踊り姿勢を書き込んだ直後なので、その上へ
+        // 相対加算する（毎フレーム姿勢が再構築されるため累積しない）。踊りを消さずに
+        // 髪・スカートだけ追加で揺らせる。
+        b.bone.rotation.x += offX * factor;
+        b.bone.rotation.z += offZ * factor;
+      } else {
+        // ダンス無し：「基準姿勢 ＋ 減衰オフセット」を絶対指定。offX/Z は加速度が
+        // 止まると 0 へ減衰するので、基準姿勢（rest）へ自然に戻る（スプリングバック）。
+        b.bone.rotation.x = b.restX + offX * factor;
+        b.bone.rotation.z = b.restZ + offZ * factor;
+      }
     }
   }
 
