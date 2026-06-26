@@ -851,6 +851,7 @@ const danceState = {
   mixer: null,     // helper が内部生成した AnimationMixer（強制同期に使う）
   audio: null,     // HTML5 Audio オブジェクト
   clip: null,      // 読み込んだ VMD の AnimationClip（物理 ON/OFF 切替の再適用に使う）
+  entry: null,     // 選択中モーションの { name, vmd, audio }（物理初回ONの再読込に使う）
 };
 
 const motionPickerBtn = document.getElementById('motion-picker-toggle');
@@ -900,6 +901,7 @@ function clearDance() {
   danceState.mixer = null;
   danceState.audio = null;
   danceState.clip = null;
+  danceState.entry = null;
   updateDancePlayButton();
 }
 
@@ -943,15 +945,17 @@ function ensureAmmo() {
 }
 
 // -----------------------------------------------------------------------------
-// 足の歪み対策：物理対象を「揺れもの」だけに限定し、足/体幹はアニメ＋IKに任せる
-//   MMD の足は IK（CCDIKSolver）で制御するが、足/ひざに動的剛体(type1/2)があると
-//   ・_optimizeIK がその IK リンクを無効化 → CCDIKSolver が break して脚IKを解かない
-//   ・物理が IK の後で脚ボーンを上書きする
-//   の二重で「骨折・足先が後ろ」になる。そこで物理へ渡す剛体を絞り込む。
+// 物理の「足除外フィルタ」は “ダンス読み込み時に 1 回だけ” 適用する設計。
+//   ・足/ひざに動的剛体(type1/2)があると _optimizeIK が脚IKリンクを無効化 → CCDIKSolver が
+//     break して脚IKを解けず、ホシノルリの足が骨折する。これを防ぐため、物理へ渡す剛体を
+//     「揺れもの＋追従剛体(type0)」に絞ってから add する（＝足の動的剛体を物理から除外）。
+//   ・この絞り込み＆ add は “ロード時の 1 回だけ”。再生中の ON/OFF では絶対に remove/add せず、
+//     enable/reset のゲート操作のみにする。再生中（ボーンがスケール変形した状態）で add し直すと、
+//     時祭りイヴの髪の物理スケール計算が壊れて巨大化・暴走するため。
 // -----------------------------------------------------------------------------
 
 // その剛体が紐づくボーンが「揺れもの（髪・スカート等）」かどうか。
-// 既存の簡易 sway と同じ判定（SWAY_EXCLUDE で足・体幹を確実に除外）。
+// 既存の簡易 sway と同じ判定（SWAY_EXCLUDE で足・体幹・捩り/補助ボーンを確実に除外）。
 function isSwayBoneName(name) {
   if (!name) return false;
   const lower = name.toLowerCase();
@@ -960,7 +964,7 @@ function isSwayBoneName(name) {
 }
 
 // MMDPhysics へ渡す剛体/拘束を「揺れもの＋追従剛体(type0)」だけに絞り込んだ配列を作る。
-//   ・type0（追従：ボーン→剛体）は脚を動かさず衝突用に有用なので保持。
+//   ・type0（追従：ボーン→剛体）は脚を動かさず、髪の拘束チェーンのアンカーにもなるので必ず保持。
 //   ・type1/2（動的：剛体→ボーン）は揺れものボーンのものだけ保持し、足/体幹/腕は除外。
 //   ・拘束は両端の剛体が残るものだけ残し、インデックスを新配列に再マップする。
 function buildSwayOnlyPhysicsArrays(mesh) {
@@ -987,9 +991,9 @@ function buildSwayOnlyPhysicsArrays(mesh) {
   return { bodies, constraints, total: srcBodies.length };
 }
 
-// 揺れものだけに物理を適用してダンスを add する（足・体幹は物理対象外）。
-//   _createMMDPhysics は geometry.userData.MMD.rigidBodies/constraints を読むため、
-//   add の間だけ絞り込んだ配列に差し替え、終わったら必ず元へ戻す。
+// 足除外フィルタを適用してダンスを add する（＝物理システムを 1 回だけ確定させる）。
+//   _createMMDPhysics は geometry.userData.MMD.rigidBodies/constraints を読むため、add の間だけ
+//   絞り込んだ配列に差し替え、終わったら必ず元へ戻す。呼び出しは「ロード時の 1 回」に限定すること。
 function addDanceWithPhysics(mesh, clip) {
   const mmd = mesh.geometry.userData.MMD;
   const origBodies = mmd.rigidBodies;
@@ -1007,7 +1011,7 @@ function addDanceWithPhysics(mesh, clip) {
 }
 
 // 全 IK リンクを有効化して脚IKを復活させる（_optimizeIK が物理ONで切った分を戻す）。
-//   揺れもの以外の動的剛体は除外済みなので、足は物理に上書きされず IK/アニメが制御できる。
+//   足の動的剛体は除外済みなので、足は物理に上書きされず IK/アニメが制御できる。
 function forceEnableAllIK(mesh) {
   const iks = mesh && mesh.geometry.userData.MMD && mesh.geometry.userData.MMD.iks;
   if (!iks) return;
@@ -1070,20 +1074,11 @@ function syncPhysics(reposition = false) {
 //   ❗remove は剛体を破棄せず・姿勢も戻さないため、再生中に繰り返すと warmup が変形姿勢から
 //     再実行され崩壊が累積する。よって作り直しは「未生成のとき1回だけ」に限定する。
 //     初回 ON 時点では物理は未稼働＝ボーンはアニメ由来のクリーンな姿勢なので安全に warmup できる。
-function ensurePhysicsObject() {
-  if (!danceState.active || !danceState.mesh || !danceState.clip) return;
-  const objData = mmdHelper.objects.get(danceState.mesh);
-  if (objData && objData.physics) return; // 既に物理オブジェクトがある → 作り直さない
-
-  const mesh = danceState.mesh;
-  const t = danceState.audio ? danceState.audio.currentTime : 0;
-  mmdHelper.enable('physics', false);            // 生成中は物理を止める
-  try { mmdHelper.remove(mesh); } catch (_) { /* 未登録なら無視 */ }
-  addDanceWithPhysics(mesh, danceState.clip);    // 揺れものだけに物理を適用（足・体幹は除外）
-  const newObj = mmdHelper.objects.get(mesh);
-  danceState.mixer = newObj ? newObj.mixer : null;
-  if (danceState.mixer) danceState.mixer.setTime(t); // 現在位置へ復帰
-  syncPhysics(true);                              // 姿勢確定→reset→（再生中なら）ゲートON
+// 現在のダンスに「足除外フィルタ済みの物理オブジェクト」があるか。
+function hasPhysicsObject() {
+  if (!danceState.mesh) return false;
+  const obj = mmdHelper.objects.get(danceState.mesh);
+  return !!(obj && obj.physics);
 }
 
 const physicsToggleBtn = document.getElementById('physics-toggle');
@@ -1097,6 +1092,13 @@ function updatePhysicsButton(busy = false) {
     : (physicsEnabled ? '本格物理：ON（タップでOFF）' : '本格物理：OFF（タップでON）');
 }
 
+// 物理 ON/OFF トグル。
+//   ❗再構築（remove/add）は一切しない。物理オブジェクトはロード時に 1 回だけ生成済み（足除外）。
+//     ・ON  … enable('physics', …) と physics.reset() のゲート操作のみ（syncPhysics）。
+//     ・OFF … enable('physics', false) のみ。
+//   例外：物理OFFのまま読み込んだダンスにはまだ物理オブジェクトが無い。その初回のみ、
+//   モーションを「再読み込み」してロード時に物理を生成する（再生中の作り直しはしない＝
+//   バインドポーズで生成されるのでスケールが壊れず、イヴの髪も巨大化しない）。
 async function togglePhysics() {
   if (!physicsToggleBtn) return;
   const turningOn = !physicsEnabled;
@@ -1116,14 +1118,22 @@ async function togglePhysics() {
       return;
     }
     physicsEnabled = true;
-    setNowPlaying(prevText || '🎵 モーション未選択');
-    updatePhysicsButton(false);
-    // 物理オブジェクトが未生成なら「このときだけ」1回生成（クリーンな姿勢で warmup）。
-    // 既にあればゲート操作だけで反映し、warmup の再実行＝崩壊累積を避ける。
-    ensurePhysicsObject();
-    syncPhysics(); // 再生中なら reset→ゲートON、停止中はOFFのまま
+
+    if (danceState.active && !hasPhysicsObject() && danceState.entry) {
+      // 物理OFFのまま読み込んでいたダンス → 物理オブジェクト未生成。
+      // 再生中の remove/add は避け、モーションを再読み込みしてロード時に 1 回だけ生成する。
+      // 再読込中はボタンを無効のままにして二重タップを防ぐ。
+      const entry = danceState.entry;
+      setNowPlaying(`⏳ ${entry.name} に物理を適用中...`);
+      await loadDance(entry);
+      updatePhysicsButton(false);
+    } else {
+      updatePhysicsButton(false);
+      setNowPlaying(prevText || '🎵 モーション未選択');
+      syncPhysics(); // 再生中なら reset→ゲートON、停止中はOFFのまま
+    }
   } else {
-    // OFF 化：作り直さず、物理ゲートを閉じるだけ（剛体は破棄せず保持＝次回ONが安全・安価）。
+    // OFF 化：作り直さず、物理ゲートを閉じるだけ（剛体は保持＝次回ONが安価・安全）。
     physicsEnabled = false;
     updatePhysicsButton(false);
     syncPhysics(); // ゲートOFF。簡易 sway が再開する
@@ -1208,6 +1218,7 @@ async function loadDance(entry) {
     danceState.mixer = objData ? objData.mixer : null;
     danceState.audio = audio;
     danceState.clip = clip;
+    danceState.entry = entry; // 物理初回ONの再読込に使う（clearDance 後に設定）
 
     // ロード直後は物理を必ずOFF（point3）。先頭フレームの姿勢だけ反映しておく
     // （再生前でも踊りの構えになる）。物理は再生ボタンが押された瞬間にクリーン開始する。
