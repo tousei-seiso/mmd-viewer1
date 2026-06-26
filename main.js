@@ -932,6 +932,80 @@ function ensureAmmo() {
   return ammoReadyPromise;
 }
 
+// -----------------------------------------------------------------------------
+// 足の歪み対策：物理対象を「揺れもの」だけに限定し、足/体幹はアニメ＋IKに任せる
+//   MMD の足は IK（CCDIKSolver）で制御するが、足/ひざに動的剛体(type1/2)があると
+//   ・_optimizeIK がその IK リンクを無効化 → CCDIKSolver が break して脚IKを解かない
+//   ・物理が IK の後で脚ボーンを上書きする
+//   の二重で「骨折・足先が後ろ」になる。そこで物理へ渡す剛体を絞り込む。
+// -----------------------------------------------------------------------------
+
+// その剛体が紐づくボーンが「揺れもの（髪・スカート等）」かどうか。
+// 既存の簡易 sway と同じ判定（SWAY_EXCLUDE で足・体幹を確実に除外）。
+function isSwayBoneName(name) {
+  if (!name) return false;
+  const lower = name.toLowerCase();
+  if (SWAY_EXCLUDE.some((k) => name.includes(k) || lower.includes(k))) return false;
+  return SWAY_KEYWORDS.some((k) => name.includes(k) || lower.includes(k));
+}
+
+// MMDPhysics へ渡す剛体/拘束を「揺れもの＋追従剛体(type0)」だけに絞り込んだ配列を作る。
+//   ・type0（追従：ボーン→剛体）は脚を動かさず衝突用に有用なので保持。
+//   ・type1/2（動的：剛体→ボーン）は揺れものボーンのものだけ保持し、足/体幹/腕は除外。
+//   ・拘束は両端の剛体が残るものだけ残し、インデックスを新配列に再マップする。
+function buildSwayOnlyPhysicsArrays(mesh) {
+  const mmd = mesh.geometry.userData.MMD || {};
+  const bones = mmd.bones || [];
+  const srcBodies = mmd.rigidBodies || [];
+  const srcConstraints = mmd.constraints || [];
+
+  const indexMap = new Map(); // 旧剛体index → 新剛体index
+  const bodies = [];
+  srcBodies.forEach((rb, i) => {
+    const keep = rb.type === 0 || isSwayBoneName(bones[rb.boneIndex] && bones[rb.boneIndex].name);
+    if (keep) { indexMap.set(i, bodies.length); bodies.push(rb); }
+  });
+
+  const constraints = [];
+  for (const c of srcConstraints) {
+    const a = indexMap.get(c.rigidBodyIndex1);
+    const b = indexMap.get(c.rigidBodyIndex2);
+    if (a !== undefined && b !== undefined) {
+      constraints.push(Object.assign({}, c, { rigidBodyIndex1: a, rigidBodyIndex2: b }));
+    }
+  }
+  return { bodies, constraints, total: srcBodies.length };
+}
+
+// 揺れものだけに物理を適用してダンスを add する（足・体幹は物理対象外）。
+//   _createMMDPhysics は geometry.userData.MMD.rigidBodies/constraints を読むため、
+//   add の間だけ絞り込んだ配列に差し替え、終わったら必ず元へ戻す。
+function addDanceWithPhysics(mesh, clip) {
+  const mmd = mesh.geometry.userData.MMD;
+  const origBodies = mmd.rigidBodies;
+  const origConstraints = mmd.constraints;
+  const filtered = buildSwayOnlyPhysicsArrays(mesh);
+  mmd.rigidBodies = filtered.bodies;
+  mmd.constraints = filtered.constraints;
+  try {
+    mmdHelper.add(mesh, { animation: clip, physics: true });
+  } finally {
+    mmd.rigidBodies = origBodies;       // MMDPhysics は構築時に取り込み済み。元データを復元
+    mmd.constraints = origConstraints;
+  }
+  console.log(`物理剛体: ${filtered.bodies.length}/${filtered.total} を適用（揺れもの＋追従のみ／足・体幹は除外）`);
+}
+
+// 全 IK リンクを有効化して脚IKを復活させる（_optimizeIK が物理ONで切った分を戻す）。
+//   揺れもの以外の動的剛体は除外済みなので、足は物理に上書きされず IK/アニメが制御できる。
+function forceEnableAllIK(mesh) {
+  const iks = mesh && mesh.geometry.userData.MMD && mesh.geometry.userData.MMD.iks;
+  if (!iks) return;
+  for (const ik of iks) {
+    for (const link of ik.links) link.enabled = true;
+  }
+}
+
 // 物理ゲートを「現在あるべき状態」に同期する。
 //   ❗暴走対策の肝：物理を有効化する瞬間は必ず
 //     ① ゲートOFF（姿勢を動かす間、絶対に physics.update を走らせない）
@@ -961,6 +1035,9 @@ function syncPhysics(reposition = false) {
     danceState.mesh.updateMatrixWorld(true); // reset は matrixWorld を読むので最新化
     physics.reset();
     mmdHelper.enable('physics', true);
+    // enable('physics', true) は _optimizeIK で足IKリンクを無効化してしまう。
+    // 足は物理対象外なので、ここで全IKリンクを有効へ戻し、脚IKをクリーンに再計算させる。
+    forceEnableAllIK(danceState.mesh);
   }
 }
 
@@ -977,7 +1054,7 @@ function ensurePhysicsObject() {
   const t = danceState.audio ? danceState.audio.currentTime : 0;
   mmdHelper.enable('physics', false);            // 生成中は物理を止める
   try { mmdHelper.remove(mesh); } catch (_) { /* 未登録なら無視 */ }
-  mmdHelper.add(mesh, { animation: danceState.clip, physics: true });
+  addDanceWithPhysics(mesh, danceState.clip);    // 揺れものだけに物理を適用（足・体幹は除外）
   const newObj = mmdHelper.objects.get(mesh);
   danceState.mixer = newObj ? newObj.mixer : null;
   if (danceState.mixer) danceState.mixer.setTime(t); // 現在位置へ復帰
@@ -1089,8 +1166,12 @@ async function loadDance(entry) {
     }
 
     // physicsEnabled に従って適用。OFF（既定）なら Ammo 不要で軽量、揺れは簡易 sway が担当。
-    // ON なら MMDPhysics による本格物理で髪・スカート等が揺れる（sway は animate 側で抑止）。
-    mmdHelper.add(mesh, { animation: clip, physics: physicsEnabled });
+    // ON なら揺れもの限定の本格物理（足・体幹は除外）で髪・スカートだけ揺れる（sway は抑止）。
+    if (physicsEnabled) {
+      addDanceWithPhysics(mesh, clip);
+    } else {
+      mmdHelper.add(mesh, { animation: clip, physics: false });
+    }
     const objData = mmdHelper.objects.get(mesh);
 
     audio.addEventListener('ended', onAudioEnded);
