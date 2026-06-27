@@ -49,7 +49,10 @@
        モデルとモーションの両方が揃うまでは disabled で半透明・タップ不可。 -->
   <button id="dance-play-toggle" type="button" title="ダンスを再生" disabled>▶️</button>
 
-  <!-- 本格物理（Ammo.js）ON/OFF トグル（再生アイコンの下）。
+  <!-- 停止アイコン（再生アイコンの下）。再生を止めて先頭(0秒)へ戻す。再生中のみ押せる。 -->
+  <button id="dance-stop-toggle" type="button" title="停止して先頭へ戻す" disabled>⏹️</button>
+
+  <!-- 本格物理（Ammo.js）ON/OFF トグル（停止アイコンの下）。
        ON 時に初めて Ammo.js を動的ロードする。ON 中は簡易揺れ(sway)を止めて物理に委ねる。 -->
   <button id="physics-toggle" type="button" title="本格物理（揺れ）をON/OFF" aria-pressed="false">🎐</button>
 
@@ -73,6 +76,16 @@
       </div>
       <ul id="motion-list"></ul>
     </div>
+  </div>
+
+  <!-- 再生位置バー（画面下部）。ダンス読み込み中に表示。つまみドラッグでシーク可能。 -->
+  <div id="seek-bar" class="hidden">
+    <span id="seek-time-current">00:00</span>
+    <div id="seek-track" role="slider" aria-label="再生位置" tabindex="0">
+      <div id="seek-fill"></div>
+      <div id="seek-thumb"></div>
+    </div>
+    <span id="seek-time-total">00:00</span>
   </div>
 
   <script type="module" src="main.js"></script>

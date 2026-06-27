@@ -947,22 +947,76 @@ const motionDialog = document.getElementById('motion-dialog');
 const motionListEl = document.getElementById('motion-list');
 const motionDialogClose = document.getElementById('motion-dialog-close');
 const dancePlayBtn = document.getElementById('dance-play-toggle');
+const danceStopBtn = document.getElementById('dance-stop-toggle');
 const nowPlayingEl = document.getElementById('now-playing');
+const seekBar = document.getElementById('seek-bar');
+const seekTrack = document.getElementById('seek-track');
+const seekFill = document.getElementById('seek-fill');
+const seekThumb = document.getElementById('seek-thumb');
+const seekTimeCurrent = document.getElementById('seek-time-current');
+const seekTimeTotal = document.getElementById('seek-time-total');
+let seekScrubbing = false; // つまみドラッグ中か（animate 側の自動同期を一時停止する）
 
 // --- 画面最上部中央のステータス表示 -----------------------------------------
 function setNowPlaying(text) {
   if (nowPlayingEl) nowPlayingEl.textContent = text;
 }
 
+// 秒数を MM:SS（分:秒・2桁ゼロ詰め）へ整形
+function formatTime(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+
 // --- 再生ボタンの状態（有効／無効・アイコン）を一括更新 ----------------------
 //   モデルとモーションの両方が揃うまでは disabled（CSS で半透明・タップ不可）。
+//   ついでに停止ボタンとシークバーの状態もまとめて更新する。
 function updateDancePlayButton() {
-  if (!dancePlayBtn) return;
-  const ready = modelReady && danceState.active;
-  dancePlayBtn.disabled = !ready;
-  dancePlayBtn.setAttribute('aria-pressed', String(danceState.playing));
-  dancePlayBtn.textContent = danceState.playing ? '⏸️' : '▶️';
-  dancePlayBtn.title = danceState.playing ? 'ダンスを一時停止' : 'ダンスを再生';
+  if (dancePlayBtn) {
+    const ready = modelReady && danceState.active;
+    dancePlayBtn.disabled = !ready;
+    dancePlayBtn.setAttribute('aria-pressed', String(danceState.playing));
+    dancePlayBtn.textContent = danceState.playing ? '⏸️' : '▶️';
+    dancePlayBtn.title = danceState.playing ? 'ダンスを一時停止' : 'ダンスを再生';
+  }
+  updateDanceStopButton();
+  updateSeekBar();
+}
+
+// --- 停止ボタンの状態（再生中のみ押せる） -----------------------------------
+function updateDanceStopButton() {
+  if (!danceStopBtn) return;
+  danceStopBtn.disabled = !danceState.playing; // 再生中だけ有効
+}
+
+// --- 再生位置バーの表示更新（可視性・つまみ位置・時刻） ----------------------
+let _seekLastSec = -1;
+let _seekLastDur = -1;
+function updateSeekBar() {
+  if (!seekBar) return;
+  const a = danceState.audio;
+  const dur = a ? a.duration : NaN;
+  const active = danceState.active && a && isFinite(dur) && dur > 0;
+  seekBar.classList.toggle('hidden', !active);
+  if (!active) { _seekLastSec = -1; _seekLastDur = -1; return; }
+
+  const cur = Math.min(Math.max(a.currentTime || 0, 0), dur);
+  const pct = (cur / dur) * 100;
+  if (seekFill) seekFill.style.width = pct + '%';
+  if (seekThumb) seekThumb.style.left = pct + '%';
+
+  const curSec = Math.floor(cur);
+  if (curSec !== _seekLastSec) { // 秒が変わったときだけ文字を書き換える（無駄な更新を避ける）
+    _seekLastSec = curSec;
+    if (seekTimeCurrent) seekTimeCurrent.textContent = formatTime(cur);
+  }
+  const durSec = Math.floor(dur);
+  if (durSec !== _seekLastDur) {
+    _seekLastDur = durSec;
+    if (seekTimeTotal) seekTimeTotal.textContent = formatTime(dur);
+  }
 }
 
 // --- ダンスの完全クリーンアップ（音源停止・破棄＋クリップ解除＋状態リセット） --
@@ -1332,17 +1386,16 @@ async function loadDance(entry) {
   }
 }
 
-// 音源が最後まで再生され終わったら、再生ボタンを「▶️（停止中）」へ戻し、物理もスリープし、
-// 全ボーンをバインドポーズへリセットして（足捩り等の補助ボーンの歪み残りを解消）綺麗に直立させる。
+// 音源が最後まで再生され終わったら、再生ボタンを「▶️（停止中）」へ戻し、物理もスリープする。
 function onAudioEnded() {
   danceState.playing = false;
   updateDancePlayButton();
   syncPhysics();                       // 停止中は物理ゲートOFF
   // ★終了時はバインドポーズへ戻さず、最終フレームのポーズをそのまま保持する。
   //   animate は playing=false の間ダンスを再適用しないので、最後に適用された姿勢が残る。
-  // 音源位置だけ先頭へ戻す（ポーズは保持されたまま）。次に再生を押すと play 分岐の
-  // syncPhysics(true) が頭(0秒)へ姿勢を合わせ直してから再生＝最初から踊り直す。
-  try { if (danceState.audio) danceState.audio.currentTime = 0; } catch (_) {}
+  //   音源位置も終端のまま（シークバーは右端を指す＝最終ポーズと一致）。次に再生を押すと
+  //   play 分岐が終端を検知して頭(0秒)へ戻してから踊り直す。
+  updateSeekBar();
 }
 
 // --- 再生／一時停止トグル ----------------------------------------------------
@@ -1355,8 +1408,13 @@ function toggleDancePlayback() {
     updateDancePlayButton();
     syncPhysics(); // ゲートOFF
   } else {
-    // 再生開始／再開：まず現在の音源位置の踊り姿勢へ復帰させてから（終了後のバインドポーズや
-    // 一時停止位置から確実に踊りへ戻す）、物理ONなら剛体リセット→ゲートONをクリーンに行う。
+    // 再生開始／再開。曲が最後まで終わっている（終端 or ended）場合は頭(0秒)へ戻して踊り直す。
+    const a = danceState.audio;
+    if (a.ended || (isFinite(a.duration) && a.duration > 0 && a.currentTime >= a.duration - 0.05)) {
+      try { a.currentTime = 0; } catch (_) {}
+    }
+    // まず現在の音源位置の踊り姿勢へ復帰させてから（終了後の最終ポーズや一時停止位置から
+    // 確実に踊りへ戻す）、物理ONなら剛体リセット→ゲートONをクリーンに行う。
     danceState.playing = true;
     updateDancePlayButton();
     syncPhysics(true); // 現在位置へ姿勢確定 → physicsEnabled なら reset してゲートON
@@ -1374,6 +1432,86 @@ function toggleDancePlayback() {
 }
 
 dancePlayBtn?.addEventListener('click', toggleDancePlayback);
+
+// --- 停止（先頭へ戻す） ------------------------------------------------------
+//   再生を完全に止め、音源位置を 0 秒へ戻し、先頭フレームの姿勢を表示する。
+//   停止ボタンは再生中のみ押せる（updateDanceStopButton）。
+function stopDance() {
+  if (!danceState.active || !danceState.audio) return;
+  try { danceState.audio.pause(); } catch (_) {}
+  try { danceState.audio.currentTime = 0; } catch (_) {}
+  danceState.playing = false;
+  updateDancePlayButton();      // 再生→▶️、停止ボタン無効化、シークバー更新
+  syncPhysics();                // 物理ゲートOFF
+  // 先頭(0秒)の姿勢を表示（animate は停止中ダンスを再適用しないため明示的に当てる）
+  if (danceState.mixer) {
+    const delta = 0 - danceState.mixer.time; // 差分で確実に pose@0 を適用
+    mmdHelper.update(delta);
+  }
+  updateSeekBar();
+}
+
+danceStopBtn?.addEventListener('click', stopDance);
+
+// --- 再生位置バーのドラッグ（シーク） ---------------------------------------
+//   つまみ／トラックをドラッグすると任意位置へ早送り・巻き戻し。
+//   ドラッグ中は音を一旦止め、離したら（再生中だった場合）その位置から再生再開する。
+let _seekWasPlaying = false;
+
+function seekRatioFromEvent(event) {
+  if (!seekTrack) return 0;
+  const rect = seekTrack.getBoundingClientRect();
+  if (rect.width <= 0) return 0;
+  return Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+}
+
+// 指定比率(0..1)の位置へシークし、姿勢とバー表示を更新する。
+function applySeek(ratio) {
+  const a = danceState.audio;
+  if (!a || !isFinite(a.duration) || a.duration <= 0) return;
+  const t = ratio * a.duration;
+  try { a.currentTime = t; } catch (_) {}
+  // ドラッグ中はその位置の踊り姿勢を即時表示（再生中・停止中どちらでも）。
+  if (danceState.mixer) {
+    const delta = t - danceState.mixer.time; // 差分で同期（animate と同じ方式）
+    mmdHelper.update(delta);
+  }
+  updateSeekBar();
+}
+
+function onSeekDown(event) {
+  if (!danceState.active || !danceState.audio) return;
+  seekScrubbing = true;
+  _seekWasPlaying = danceState.playing;
+  // ドラッグ中は音を止める（スクラブ音を鳴らさない）。playing フラグは維持。
+  if (_seekWasPlaying) { try { danceState.audio.pause(); } catch (_) {} }
+  seekTrack.setPointerCapture?.(event.pointerId);
+  applySeek(seekRatioFromEvent(event));
+}
+
+function onSeekMove(event) {
+  if (!seekScrubbing) return;
+  applySeek(seekRatioFromEvent(event));
+}
+
+function onSeekUp(event) {
+  if (!seekScrubbing) return;
+  seekScrubbing = false;
+  seekTrack.releasePointerCapture?.(event.pointerId);
+  if (_seekWasPlaying && danceState.audio) {
+    // 再生中だった場合は、その位置から再生再開（物理もクリーンに同期し直す）
+    syncPhysics(true);
+    const p = danceState.audio.play();
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+  }
+}
+
+if (seekTrack) {
+  seekTrack.addEventListener('pointerdown', onSeekDown);
+  seekTrack.addEventListener('pointermove', onSeekMove);
+  seekTrack.addEventListener('pointerup', onSeekUp);
+  seekTrack.addEventListener('pointercancel', onSeekUp);
+}
 
 // --- モーション一覧の取得（マニフェスト → ディレクトリ走査） ----------------
 //   返り値は { name, vmd, audio } の配列（vmd/audio は motions/ からの相対パス）。
@@ -1587,12 +1725,15 @@ function animate() {
   //   再生中(playing)のときだけ適用する。停止・一時停止・終了時は更新を止め、その時点の
   //   姿勢（停止＝直前の踊り、終了＝バインドポーズへリセット済み）をそのまま保持する。
   //   これにより、再生終了後に補助ボーンが歪んだまま再適用され続けるのを防ぐ。
+  //   ※ シーク中(seekScrubbing)は applySeek 側で姿勢を当てるため、ここでは同期しない。
   let danceUpdatedThisFrame = false;
-  if (danceState.active && danceState.playing && danceState.mesh === currentModel && danceState.mixer && danceState.audio) {
+  if (danceState.active && danceState.playing && !seekScrubbing && danceState.mesh === currentModel && danceState.mixer && danceState.audio) {
     const delta = danceState.audio.currentTime - danceState.mixer.time;
     mmdHelper.update(delta);
     danceUpdatedThisFrame = true;
   }
+  // 再生位置バーのつまみ・時刻を更新（ドラッグ中はドラッグ側が更新するのでスキップ）。
+  if (!seekScrubbing) updateSeekBar();
 
   // --- 簡易揺れもの（フェイク物理）---------------------------------------------
   // ここは「モーション（VMD）が更新された直後」に相当する位置。モーション適用後の

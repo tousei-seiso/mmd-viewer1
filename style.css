@@ -262,11 +262,46 @@ body {
   pointer-events: none;
 }
 
-/* 本格物理（Ammo.js）ON/OFF トグル（再生アイコンのすぐ下、見た目は共通） */
-#physics-toggle {
+/* 停止アイコン（再生アイコンのすぐ下、見た目は共通） */
+#dance-stop-toggle {
   position: fixed;
   /* 再生アイコン（44px+8px）の下に並べる */
   top: calc(max(12px, env(safe-area-inset-top)) + 312px);
+  right: max(12px, env(safe-area-inset-right));
+  z-index: 20;
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.2s ease, transform 0.1s ease, opacity 0.2s ease;
+}
+
+#dance-stop-toggle:active {
+  transform: scale(0.92);
+}
+
+/* 再生中以外は半透明・タップ不可 */
+#dance-stop-toggle:disabled {
+  opacity: 0.4;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* 本格物理（Ammo.js）ON/OFF トグル（停止アイコンのすぐ下、見た目は共通） */
+#physics-toggle {
+  position: fixed;
+  /* 停止アイコン（44px+8px）の下に並べる */
+  top: calc(max(12px, env(safe-area-inset-top)) + 364px);
   right: max(12px, env(safe-area-inset-right));
   z-index: 20;
   width: 44px;
@@ -300,6 +335,95 @@ body {
   opacity: 0.4;
   cursor: default;
   pointer-events: none;
+}
+
+/* -------------------------------------------------------------------------
+   再生位置バー（画面下部）：緑の細い横長バー＋ドラッグできるつまみ＋時刻表示
+   ------------------------------------------------------------------------- */
+#seek-bar {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: max(14px, env(safe-area-inset-bottom));
+  z-index: 25;
+  width: min(640px, 92vw);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  pointer-events: none; /* バー自体は透過。操作はトラックのみ受ける */
+}
+
+#seek-bar.hidden {
+  display: none;
+}
+
+/* 時刻表示（左：現在位置 / 右：終了時刻） */
+#seek-time-current,
+#seek-time-total {
+  flex: 0 0 auto;
+  min-width: 44px;
+  text-align: center;
+  color: #fff;
+  font-size: 12px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ドラッグ操作を受け取るトラック（タッチしやすいよう高さを確保し、バーは中央に細く） */
+#seek-track {
+  position: relative;
+  flex: 1 1 auto;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  pointer-events: auto;     /* ここだけ操作可能 */
+  touch-action: none;       /* ドラッグがスクロール/ズームに奪われないように */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 細い横長バー（背景＝未再生部分） */
+#seek-track::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* 再生済み部分（緑） */
+#seek-fill {
+  position: absolute;
+  left: 0;
+  height: 4px;
+  width: 0%;
+  border-radius: 2px;
+  background: #3ddc4f;
+  pointer-events: none;
+}
+
+/* つまみ（現在位置） */
+#seek-thumb {
+  position: absolute;
+  left: 0%;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #3ddc4f;
+  border: 2px solid #fff;
+  transform: translateX(-50%);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+#seek-track:active #seek-thumb {
+  transform: translateX(-50%) scale(1.25);
 }
 
 /* 画面最上部中央のステータス表示（曲名・読み込み状況）。タップを邪魔しない。 */
