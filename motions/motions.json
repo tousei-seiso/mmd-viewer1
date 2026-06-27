@@ -9,6 +9,12 @@
       "name": "jump up light",
       "vmd": "jump up/JUMP UP_Light.vmd",
       "audio": "jump up/jump up.mp3"
+    },
+    {
+      "name": "モニタリング(Best Friend Remix)",
+      "vmd": "モニタリング(Best Friend Remix)/モニタリング (Best Friend Remix) モーション.vmd",
+      "audio": "モニタリング (Best Friend Remix).mp3"
     }
+  ]
   ]
 }
