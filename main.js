@@ -1338,8 +1338,11 @@ function onAudioEnded() {
   danceState.playing = false;
   updateDancePlayButton();
   syncPhysics();                       // 停止中は物理ゲートOFF
-  resetMeshPose(danceState.mesh);      // 全ボーンを初期姿勢へ → IK/物理も初期位置へ引き戻す
-  try { if (danceState.audio) danceState.audio.currentTime = 0; } catch (_) {} // 次回は頭から
+  // ★終了時はバインドポーズへ戻さず、最終フレームのポーズをそのまま保持する。
+  //   animate は playing=false の間ダンスを再適用しないので、最後に適用された姿勢が残る。
+  // 音源位置だけ先頭へ戻す（ポーズは保持されたまま）。次に再生を押すと play 分岐の
+  // syncPhysics(true) が頭(0秒)へ姿勢を合わせ直してから再生＝最初から踊り直す。
+  try { if (danceState.audio) danceState.audio.currentTime = 0; } catch (_) {}
 }
 
 // --- 再生／一時停止トグル ----------------------------------------------------
