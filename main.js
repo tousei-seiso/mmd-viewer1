@@ -204,36 +204,57 @@ function bakeTranslationGrants(mesh, clip) {
   }
 
   const newTracks = [];
-  for (let i = 0; i < bonesData.length; i++) {
-    const g = bonesData[i].grant;
-    if (!g || !g.affectPosition || g.isLocal || g.parentIndex < 0) continue; // 移動付与(非ローカル)のみ
-    const bName = bonesData[i].name;
-    if (posTrackByName.has(bName)) continue; // 既に自前の位置アニメがある場合は触らない
-    const pData = bonesData[g.parentIndex];
-    const pName = pData && pData.name;
-    const pTrack = pName && posTrackByName.get(pName);
-    if (!pTrack) continue; // 付与元にアニメ位置が無ければ動かないのでスキップ
+  const done = new Set();
+  let progress = true;
+  // 多パス（不動点）で処理：付与元(親)のトラックが未確定なら次パスへ回し、連鎖付与にも対応する。
+  while (progress) {
+    progress = false;
+    for (let i = 0; i < bonesData.length; i++) {
+      if (done.has(i)) continue;
+      const g = bonesData[i].grant;
+      if (!g) { done.add(i); continue; }
+      // grant のフィールド名はパーサ差で異なることがあるため両対応で読む（ここが効かないと焼き込みが0件になる）。
+      const affectPosition = g.affectPosition ?? g.pos ?? false;
+      const isLocal = g.isLocal ?? g.local ?? false;
+      const parentIndex = g.parentIndex ?? g.parent ?? -1;
+      const ratio = g.ratio ?? 0;
+      if (!affectPosition || isLocal || parentIndex < 0) { done.add(i); continue; } // 移動付与(非ローカル)のみ
 
-    const bBone = mesh.skeleton.getBoneByName(bName);
-    const pBone = mesh.skeleton.getBoneByName(pName);
-    if (!bBone || !pBone) continue;
+      const bName = bonesData[i].name;
+      if (posTrackByName.has(bName)) { done.add(i); continue; } // 既に自前の位置アニメがある場合は触らない
+      const pData = bonesData[parentIndex];
+      const pName = pData && pData.name;
+      const pTrack = pName && posTrackByName.get(pName);
+      if (!pTrack) continue; // 付与元トラック未確定 → 次パスで再試行（連鎖付与対応）
 
-    const r = g.ratio;
-    const bx = bBone.position.x, by = bBone.position.y, bz = bBone.position.z; // B.rest
-    const px = pBone.position.x, py = pBone.position.y, pz = pBone.position.z; // P.rest
-    const pv = pTrack.values;
-    const n = pTrack.times.length;
-    const values = new Float32Array(n * 3);
-    for (let k = 0; k < n; k++) {
-      values[k * 3]     = bx + r * (pv[k * 3]     - px);
-      values[k * 3 + 1] = by + r * (pv[k * 3 + 1] - py);
-      values[k * 3 + 2] = bz + r * (pv[k * 3 + 2] - pz);
+      // ❗rest は「その時点のボーン姿勢」ではなく、MMDLoader が保持するローカルrest
+      // (geometry.userData.MMD.bones[i].pos) から読む。bake 時にメッシュが bind 姿勢で
+      // ない場合に bBone.position を読むと rest を誤り、トラックが正しく動かない（実機で
+      // 「何も動かない」の原因はこれだった）。pos は姿勢に依存しないので安全。
+      const bRest = bonesData[i].pos;
+      const pRest = pData.pos;
+      if (!bRest || !pRest) { done.add(i); continue; }
+      const bx = bRest[0], by = bRest[1], bz = bRest[2]; // B.rest（ローカル）
+      const px = pRest[0], py = pRest[1], pz = pRest[2]; // P.rest（ローカル）
+      const pv = pTrack.values;
+      const n = pTrack.times.length;
+      const values = new Float32Array(n * 3);
+      for (let k = 0; k < n; k++) {
+        values[k * 3]     = bx + ratio * (pv[k * 3]     - px);
+        values[k * 3 + 1] = by + ratio * (pv[k * 3 + 1] - py);
+        values[k * 3 + 2] = bz + ratio * (pv[k * 3 + 2] - pz);
+      }
+      const track = new THREE.VectorKeyframeTrack(`.bones[${bName}].position`, Float32Array.from(pTrack.times), values);
+      newTracks.push(track);
+      posTrackByName.set(bName, track); // 生成したトラックも登録 → 連鎖付与が辿れるようにする
+      done.add(i);
+      progress = true;
     }
-    newTracks.push(new THREE.VectorKeyframeTrack(`.bones[${bName}].position`, Float32Array.from(pTrack.times), values));
   }
 
   if (newTracks.length) {
     clip.tracks.push(...newTracks);
+    if (typeof clip.resetDuration === 'function') clip.resetDuration(); // トラック追加後に長さを再計算
     console.log(`移動付与を ${newTracks.length} 件アニメへ焼き込み（足IK等が正しく動く）`);
   }
 }
