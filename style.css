@@ -337,6 +337,80 @@ body {
   pointer-events: none;
 }
 
+/* 背景・床の色を変えるパレットアイコン（物理アイコンのすぐ下、見た目は共通） */
+#color-picker-toggle {
+  position: fixed;
+  /* 物理アイコン（44px+8px）の下に並べる */
+  top: calc(max(12px, env(safe-area-inset-top)) + 416px);
+  right: max(12px, env(safe-area-inset-right));
+  z-index: 20;
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.2s ease, transform 0.1s ease;
+}
+
+#color-picker-toggle:active {
+  transform: scale(0.92);
+}
+
+#color-picker-toggle[aria-expanded='true'] {
+  background: rgba(40, 110, 200, 0.9);
+}
+
+/* 色変更パネル（パレットアイコンの左隣に表示） */
+#color-panel {
+  position: fixed;
+  top: calc(max(12px, env(safe-area-inset-top)) + 416px);
+  right: calc(max(12px, env(safe-area-inset-right)) + 52px);
+  z-index: 22;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: rgba(24, 28, 36, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+#color-panel.hidden {
+  display: none;
+}
+
+.color-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  color: #fff;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+.color-row input[type='color'] {
+  width: 40px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+}
+
 /* -------------------------------------------------------------------------
    再生位置バー（画面下部）：緑の細い横長バー＋ドラッグできるつまみ＋時刻表示
    ------------------------------------------------------------------------- */

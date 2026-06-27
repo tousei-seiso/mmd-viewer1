@@ -651,6 +651,49 @@ function resetView() {
 resetViewBtn?.addEventListener('click', resetView);
 
 // -----------------------------------------------------------------------------
+// 背景・床の色変更（🎨 アイコン）
+//   HTML5 標準のカラーピッカー（<input type="color">）の値を Three.js へ反映する。
+//   背景: scene.background（THREE.Color を set） / 床: ground メッシュの material.color。
+// -----------------------------------------------------------------------------
+const colorPickerBtn = document.getElementById('color-picker-toggle');
+const colorPanel = document.getElementById('color-panel');
+const bgColorInput = document.getElementById('bg-color');
+const floorColorInput = document.getElementById('floor-color');
+
+function applyBgColor(value) {
+  if (scene.background && scene.background.isColor) scene.background.set(value);
+  else scene.background = new THREE.Color(value);
+}
+function applyFloorColor(value) {
+  if (ground && ground.material && ground.material.color) ground.material.color.set(value);
+}
+
+// カラーピッカーの初期値を実際の初期色に合わせておく
+if (bgColorInput) bgColorInput.value = '#' + new THREE.Color(0x223344).getHexString();
+if (floorColorInput) floorColorInput.value = '#' + new THREE.Color(0x335577).getHexString();
+
+// 'input' で即時反映（ドラッグ中もリアルタイムに色が変わる）
+bgColorInput?.addEventListener('input', (e) => applyBgColor(e.target.value));
+floorColorInput?.addEventListener('input', (e) => applyFloorColor(e.target.value));
+
+function closeColorPanel() {
+  colorPanel?.classList.add('hidden');
+  colorPickerBtn?.setAttribute('aria-expanded', 'false');
+}
+function openColorPanel() {
+  colorPanel?.classList.remove('hidden');
+  colorPickerBtn?.setAttribute('aria-expanded', 'true');
+}
+colorPickerBtn?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (colorPanel && colorPanel.classList.contains('hidden')) openColorPanel();
+  else closeColorPanel();
+});
+// パネル外をクリックしたら閉じる（パネル内のクリックは伝播させない）
+colorPanel?.addEventListener('click', (e) => e.stopPropagation());
+window.addEventListener('click', () => closeColorPanel());
+
+// -----------------------------------------------------------------------------
 // モデル選択ダイアログ（📁 アイコン）
 //   models/ 以下（サブフォルダ含む）の .pmx / .pmd を一覧表示し、選んだモデルへ
 //   切り替える。テクスチャ名の衝突を避けるため、モデルは models/<名前>/ のように

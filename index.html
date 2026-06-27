@@ -56,6 +56,21 @@
        ON 時に初めて Ammo.js を動的ロードする。ON 中は簡易揺れ(sway)を止めて物理に委ねる。 -->
   <button id="physics-toggle" type="button" title="本格物理（揺れ）をON/OFF" aria-pressed="false">🎐</button>
 
+  <!-- 背景・床の色を変えるパレットアイコン（物理アイコンの下）。クリックで色パネルを開閉。 -->
+  <button id="color-picker-toggle" type="button" title="背景・床の色を変更" aria-expanded="false">🎨</button>
+
+  <!-- 色変更パネル（HTML5 標準カラーピッカー。背景＝scene.background / 床＝床メッシュの色） -->
+  <div id="color-panel" class="hidden">
+    <label class="color-row">
+      <span>背景</span>
+      <input type="color" id="bg-color" value="#223344" />
+    </label>
+    <label class="color-row">
+      <span>床</span>
+      <input type="color" id="floor-color" value="#335577" />
+    </label>
+  </div>
+
   <!-- モデル選択ダイアログ（models フォルダ内の .pmx / .pmd を一覧表示） -->
   <div id="model-dialog" class="hidden" role="dialog" aria-modal="true" aria-label="モデルを選択">
     <div id="model-dialog-panel">
