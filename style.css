@@ -5,6 +5,22 @@
   box-sizing: border-box;
 }
 
+/* -------------------------------------------------------------------------
+   共通デザイントークン（右上に縦並びする丸トグルボタン群の寸法・配色・位置）
+     ・新しいボタンを追加するときは、共通スタイルをコピーして
+       top: calc(var(--safe-top) + var(--btn-step) * N); の N を 1 つ増やすだけでよい。
+     ・--btn-step（=直径+余白）が縦の送り量。間隔を変えたいときはここだけ直す。
+   ------------------------------------------------------------------------- */
+:root {
+  --btn-size: 44px;                                    /* ボタンの直径 */
+  --btn-gap: 8px;                                      /* ボタン間の余白 */
+  --btn-step: calc(var(--btn-size) + var(--btn-gap));  /* 1 段あたりの送り量（=52px） */
+  --safe-top: max(12px, env(safe-area-inset-top));     /* セーフエリア上端からの基準位置 */
+  --safe-right: max(12px, env(safe-area-inset-right)); /* セーフエリア右端からの基準位置 */
+  --btn-bg: rgba(0, 0, 0, 0.45);                       /* 通常時の背景 */
+  --btn-bg-on: rgba(40, 110, 200, 0.9);                /* ON / 展開中の背景 */
+}
+
 html,
 body {
   width: 100%;
@@ -68,14 +84,14 @@ body {
 /* 診断表示の ON/OFF アイコン（画面右上、セーフエリア対応） */
 #debug-toggle {
   position: fixed;
-  top: max(12px, env(safe-area-inset-top));
-  right: max(12px, env(safe-area-inset-right));
+  top: var(--safe-top);
+  right: var(--safe-right);
   z-index: 20;
-  width: 44px;
-  height: 44px;
+  width: var(--btn-size);
+  height: var(--btn-size);
   border: none;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--btn-bg);
   color: #fff;
   font-size: 20px;
   line-height: 1;
@@ -94,21 +110,21 @@ body {
 
 /* ON 状態（aria-pressed="true"）は色で明示 */
 #debug-toggle[aria-pressed='true'] {
-  background: rgba(40, 110, 200, 0.9);
+  background: var(--btn-bg-on);
 }
 
 /* モデル選択フォルダアイコン（診断アイコンのすぐ下、見た目は共通） */
 #model-picker-toggle {
   position: fixed;
-  /* debug-toggle（高さ44px）の下に 8px 空けて並べる */
-  top: calc(max(12px, env(safe-area-inset-top)) + 52px);
-  right: max(12px, env(safe-area-inset-right));
+  /* debug-toggle（高さ44px）の下に 8px 空けて並べる（= 1 段下） */
+  top: calc(var(--safe-top) + var(--btn-step) * 1);
+  right: var(--safe-right);
   z-index: 20;
-  width: 44px;
-  height: 44px;
+  width: var(--btn-size);
+  height: var(--btn-size);
   border: none;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--btn-bg);
   color: #fff;
   font-size: 20px;
   line-height: 1;
@@ -126,21 +142,21 @@ body {
 }
 
 #model-picker-toggle[aria-expanded='true'] {
-  background: rgba(40, 110, 200, 0.9);
+  background: var(--btn-bg-on);
 }
 
 /* 画面の向き固定トグル（モデル選択アイコンのすぐ下、見た目は共通） */
 #orientation-lock-toggle {
   position: fixed;
-  /* debug-toggle / model-picker-toggle（各44px+8px）の下に並べる */
-  top: calc(max(12px, env(safe-area-inset-top)) + 104px);
-  right: max(12px, env(safe-area-inset-right));
+  /* 上から 2 段下 */
+  top: calc(var(--safe-top) + var(--btn-step) * 2);
+  right: var(--safe-right);
   z-index: 20;
-  width: 44px;
-  height: 44px;
+  width: var(--btn-size);
+  height: var(--btn-size);
   border: none;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--btn-bg);
   color: #fff;
   font-size: 20px;
   line-height: 1;
@@ -159,21 +175,21 @@ body {
 
 /* 固定中（aria-pressed="true"）は色で明示 */
 #orientation-lock-toggle[aria-pressed='true'] {
-  background: rgba(40, 110, 200, 0.9);
+  background: var(--btn-bg-on);
 }
 
 /* 正面・全身リセットアイコン（向き固定アイコンのすぐ下、見た目は共通） */
 #reset-view-toggle {
   position: fixed;
-  /* debug-toggle / model-picker-toggle / orientation-lock-toggle（各44px+8px）の下に並べる */
-  top: calc(max(12px, env(safe-area-inset-top)) + 156px);
-  right: max(12px, env(safe-area-inset-right));
+  /* 上から 3 段下 */
+  top: calc(var(--safe-top) + var(--btn-step) * 3);
+  right: var(--safe-right);
   z-index: 20;
-  width: 44px;
-  height: 44px;
+  width: var(--btn-size);
+  height: var(--btn-size);
   border: none;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--btn-bg);
   color: #fff;
   font-size: 20px;
   line-height: 1;
@@ -193,15 +209,15 @@ body {
 /* ダンスモーション選択アイコン（カメラリセットアイコンのすぐ下、見た目は共通） */
 #motion-picker-toggle {
   position: fixed;
-  /* debug / model-picker / orientation-lock / reset-view（各44px+8px）の下に並べる */
-  top: calc(max(12px, env(safe-area-inset-top)) + 208px);
-  right: max(12px, env(safe-area-inset-right));
+  /* 上から 4 段下 */
+  top: calc(var(--safe-top) + var(--btn-step) * 4);
+  right: var(--safe-right);
   z-index: 20;
-  width: 44px;
-  height: 44px;
+  width: var(--btn-size);
+  height: var(--btn-size);
   border: none;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--btn-bg);
   color: #fff;
   font-size: 20px;
   line-height: 1;
@@ -219,21 +235,21 @@ body {
 }
 
 #motion-picker-toggle[aria-expanded='true'] {
-  background: rgba(40, 110, 200, 0.9);
+  background: var(--btn-bg-on);
 }
 
 /* ダンス再生／一時停止アイコン（音符アイコンのすぐ下、見た目は共通） */
 #dance-play-toggle {
   position: fixed;
-  /* 音符アイコン（44px+8px）の下に並べる */
-  top: calc(max(12px, env(safe-area-inset-top)) + 260px);
-  right: max(12px, env(safe-area-inset-right));
+  /* 上から 5 段下 */
+  top: calc(var(--safe-top) + var(--btn-step) * 5);
+  right: var(--safe-right);
   z-index: 20;
-  width: 44px;
-  height: 44px;
+  width: var(--btn-size);
+  height: var(--btn-size);
   border: none;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--btn-bg);
   color: #fff;
   font-size: 20px;
   line-height: 1;
@@ -252,7 +268,7 @@ body {
 
 /* 再生中（aria-pressed="true"）は色で明示 */
 #dance-play-toggle[aria-pressed='true'] {
-  background: rgba(40, 110, 200, 0.9);
+  background: var(--btn-bg-on);
 }
 
 /* モデルとモーションが揃うまでは半透明・タップ不可 */
@@ -265,15 +281,15 @@ body {
 /* 停止アイコン（再生アイコンのすぐ下、見た目は共通） */
 #dance-stop-toggle {
   position: fixed;
-  /* 再生アイコン（44px+8px）の下に並べる */
-  top: calc(max(12px, env(safe-area-inset-top)) + 312px);
-  right: max(12px, env(safe-area-inset-right));
+  /* 上から 6 段下 */
+  top: calc(var(--safe-top) + var(--btn-step) * 6);
+  right: var(--safe-right);
   z-index: 20;
-  width: 44px;
-  height: 44px;
+  width: var(--btn-size);
+  height: var(--btn-size);
   border: none;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--btn-bg);
   color: #fff;
   font-size: 20px;
   line-height: 1;
@@ -300,15 +316,15 @@ body {
 /* 本格物理（Ammo.js）ON/OFF トグル（停止アイコンのすぐ下、見た目は共通） */
 #physics-toggle {
   position: fixed;
-  /* 停止アイコン（44px+8px）の下に並べる */
-  top: calc(max(12px, env(safe-area-inset-top)) + 364px);
-  right: max(12px, env(safe-area-inset-right));
+  /* 上から 7 段下 */
+  top: calc(var(--safe-top) + var(--btn-step) * 7);
+  right: var(--safe-right);
   z-index: 20;
-  width: 44px;
-  height: 44px;
+  width: var(--btn-size);
+  height: var(--btn-size);
   border: none;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--btn-bg);
   color: #fff;
   font-size: 20px;
   line-height: 1;
@@ -327,7 +343,7 @@ body {
 
 /* ON 状態（aria-pressed="true"）は色で明示 */
 #physics-toggle[aria-pressed='true'] {
-  background: rgba(40, 110, 200, 0.9);
+  background: var(--btn-bg-on);
 }
 
 /* Ammo.js 読み込み中などの一時無効化（半透明・タップ不可） */
@@ -340,15 +356,15 @@ body {
 /* 背景・床の色を変えるパレットアイコン（物理アイコンのすぐ下、見た目は共通） */
 #color-picker-toggle {
   position: fixed;
-  /* 物理アイコン（44px+8px）の下に並べる */
-  top: calc(max(12px, env(safe-area-inset-top)) + 416px);
-  right: max(12px, env(safe-area-inset-right));
+  /* 上から 8 段下 */
+  top: calc(var(--safe-top) + var(--btn-step) * 8);
+  right: var(--safe-right);
   z-index: 20;
-  width: 44px;
-  height: 44px;
+  width: var(--btn-size);
+  height: var(--btn-size);
   border: none;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--btn-bg);
   color: #fff;
   font-size: 20px;
   line-height: 1;
@@ -366,14 +382,42 @@ body {
 }
 
 #color-picker-toggle[aria-expanded='true'] {
-  background: rgba(40, 110, 200, 0.9);
+  background: var(--btn-bg-on);
+}
+
+/* スクリーンショット保存アイコン（パレットアイコンのすぐ下、見た目は共通） */
+#screenshot-toggle {
+  position: fixed;
+  /* 上から 9 段下（カラーピッカーの 1 段下） */
+  top: calc(var(--safe-top) + var(--btn-step) * 9);
+  right: var(--safe-right);
+  z-index: 20;
+  width: var(--btn-size);
+  height: var(--btn-size);
+  border: none;
+  border-radius: 50%;
+  background: var(--btn-bg);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.2s ease, transform 0.1s ease;
+}
+
+#screenshot-toggle:active {
+  transform: scale(0.92);
 }
 
 /* 色変更パネル（パレットアイコンの左隣に表示） */
 #color-panel {
   position: fixed;
-  top: calc(max(12px, env(safe-area-inset-top)) + 416px);
-  right: calc(max(12px, env(safe-area-inset-right)) + 52px);
+  top: calc(var(--safe-top) + var(--btn-step) * 8);
+  right: calc(var(--safe-right) + var(--btn-step));
   z-index: 22;
   display: flex;
   flex-direction: column;
