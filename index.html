@@ -59,6 +59,10 @@
   <!-- 背景・床の色を変えるパレットアイコン（物理アイコンの下）。クリックで色パネルを開閉。 -->
   <button id="color-picker-toggle" type="button" title="背景・床の色を変更" aria-expanded="false">🎨</button>
 
+  <!-- 現在の3D画面をPNGとしてサイレント保存するスクリーンショットアイコン（パレットアイコンの下）。
+       クリックで ui.js の setupScreenshot() → view3d.js の takeScreenshot() が呼ばれる。 -->
+  <button id="screenshot-toggle" type="button" title="スクリーンショットを保存">📷</button>
+
   <!-- 色変更パネル（HTML5 標準カラーピッカー。背景＝scene.background / 床＝床メッシュの色） -->
   <div id="color-panel" class="hidden">
     <label class="color-row">
