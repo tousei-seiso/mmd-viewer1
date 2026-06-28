@@ -33,6 +33,7 @@ import {
   setNowPlaying,
   getNowPlaying,
   resizeRenderer,
+  takeScreenshot,
 } from './view3d.js';
 
 // -----------------------------------------------------------------------------
@@ -106,6 +107,34 @@ function setupOrientationLock() {
 function setupResetView() {
   const resetViewBtn = document.getElementById('reset-view-toggle');
   resetViewBtn?.addEventListener('click', resetView);
+}
+
+// -----------------------------------------------------------------------------
+// スクリーンショット（📷 アイコン）
+//   現在の 3D 画面を view3d.js の takeScreenshot() で PNG の DataURL として取得し、
+//   選択画面やダイアログを一切挟まずにサイレント保存する。一時的な <a download> を
+//   動的生成して click() を発火させ、バックグラウンドで即座にダウンロードを実行する。
+// -----------------------------------------------------------------------------
+function setupScreenshot() {
+  const screenshotBtn = document.getElementById('screenshot-toggle');
+  if (!screenshotBtn) return;
+
+  screenshotBtn.addEventListener('click', () => {
+    let dataUrl;
+    try {
+      dataUrl = takeScreenshot();
+    } catch (err) {
+      console.error('スクリーンショットの取得に失敗しました:', err);
+      return;
+    }
+    // 一時的な <a> を生成し、download 属性でファイル名を指定して即クリック → サイレント保存。
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = 'screenshot.png';
+    document.body.appendChild(link); // 一部ブラウザは DOM 接続済みでないと click() が効かない
+    link.click();
+    document.body.removeChild(link);
+  });
 }
 
 // -----------------------------------------------------------------------------
@@ -341,6 +370,7 @@ function setupPhysicsToggle() {
 export function initUI() {
   setupOrientationLock();
   setupResetView();
+  setupScreenshot();
   setupColorPanel();
   setupModelDialog();
   setupMotionDialog();

@@ -96,7 +96,10 @@ const camera = new THREE.PerspectiveCamera(
 // 初期位置・姿勢は描画ループ内のクォータニオン合成（BASE_YAW / BASE_PITCH）で決まる。
 
 // レンダラー
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+//   preserveDrawingBuffer: true ―― スクリーンショット（toDataURL）で描画バッファを
+//   読み出せるようにする。これが無いと描画直後にバッファがクリアされ、キャプチャ画像が
+//   真っ黒になる（takeScreenshot 参照）。
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // 高 DPI 端末の負荷を抑制
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
@@ -1342,6 +1345,14 @@ function setStatus(message, autoHide = false) {
 // 公開アクセサ（audio.js への依存注入や ui.js の物理トグルが使う）
 // -----------------------------------------------------------------------------
 export function isModelReady() { return modelReady; }
+// 現在の 3D 画面を PNG の DataURL としてキャプチャして返す（ui.js のスクショボタンが使う）。
+//   ・呼び出し直前に一度描画して、最新フレームを確実にバッファへ載せてから読み出す。
+//   ・WebGLRenderer は preserveDrawingBuffer: true で生成済みなので toDataURL で読める
+//     （無効だと描画バッファがクリアされ画像が真っ黒になる）。
+export function takeScreenshot() {
+  renderer.render(scene, camera); // 直近フレームを確実に描いてからキャプチャ
+  return renderer.domElement.toDataURL('image/png');
+}
 export function applyMixerDelta(delta) { mmdHelper.update(delta); }
 export function isPhysicsEnabled() { return physicsEnabled; }
 export function setPhysicsEnabled(value) { physicsEnabled = value; }
