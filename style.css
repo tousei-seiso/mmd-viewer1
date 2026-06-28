@@ -57,7 +57,7 @@ body {
   position: fixed;
   left: 0;
   right: 0;
-  bottom: max(16px, env(safe-area-inset-bottom));
+  bottom: calc(max(14px, env(safe-area-inset-bottom)) + 44px);
   display: flex;
   justify-content: center;
   pointer-events: none; /* 3D 操作の邪魔をしない */
