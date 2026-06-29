@@ -68,9 +68,9 @@ export function updateSway() {
 //   DeviceMotion とは別イベント。
 //   ❗ event.alpha をそのまま方位角に使うと、画面法線（Z 軸）まわりのロール（ハンドルを
 //     回す動作）でも alpha 値が変化してしまい、カメラが意図せず周回する。
-//   ✅ W3C 回転行列 R = Rz(α)·Rx(β)·Ry(γ) の第 3 列 = 端末 +Z 軸（画面法線）の
-//     ワールド座標を使う。ロールは画面法線を軸とした回転そのものなので、法線方向は
-//     ロールしても変化しない（ロール不変）。水平成分の方位角を yaw として採用する。
+//   ✅ W3C 回転行列 R（Earth→Device）の第 3 行（Row 2）= 端末 +Z 軸（画面法線）の
+//     ENU 座標を使う。ロールは画面法線を軸とした回転なので Row 2 は不変。
+//     Row 2 = [ -cosβ·sinγ,  sinβ,  cosβ·cosγ ]（alpha 依存なし）。
 const _DEG = Math.PI / 180;
 let orientationAlpha = null; // ラジアン。未受信時は null
 let orientationActive = false;
@@ -80,17 +80,25 @@ function onDeviceOrientation(event) {
   if (alpha == null || beta == null || gamma == null) return;
   orientationActive = true;
 
-  const cA = Math.cos(alpha * _DEG);
-  const sA = Math.sin(alpha * _DEG);
+  // W3C 回転行列 R = Rz(α)·Rx(β)·Ry(γ) は「Earth(ENU) → Device」変換。
+  // 画面法線（端末+Z軸）の ENU 座標 = R^T × (0,0,1) = R の【第3行（Row 2）】。
+  //   Row 2 = [ -cosβ·sinγ,  sinβ,  cosβ·cosγ ]
+  //
+  // ❗ Column 2 ≠ Row 2。以前の実装は列(Column 2)を使っていたため誤り。
+  //
+  // ロール不変の証明：
+  //   ロール = 端末+Z 軸まわりの回転 → R_new = Rz_dev(δ)·R_old
+  //   Row 2(R_new) = Rz(δ) の第3行 [0,0,1] × R_old = Row 2(R_old) → 不変 ✓
+  //
+  // 垂直軸（ENU Z）まわりの回転は Row 2 を変化させる → 方位角が変わる ✓
+  // alpha は Row 2 に依存しない（Rz(α) は Z 成分を保存するため）。
   const cB = Math.cos(beta  * _DEG);
   const sB = Math.sin(beta  * _DEG);
   const cG = Math.cos(gamma * _DEG);
   const sG = Math.sin(gamma * _DEG);
 
-  // W3C 回転行列の第3列（画面法線をワールド座標へ変換）
-  //   snX = ENU の東成分, snY = ENU の北成分
-  const snX = cA * sG + sA * sB * cG;
-  const snY = sA * sG - cA * sB * cG;
+  const snX = -cB * sG; // ENU 東成分
+  const snY =  sB;      // ENU 北成分
 
   // 水平成分が十分あるとき（スマホが概ね垂直）のみ方位角を更新する。
   // 画面がほぼ真上/真下を向いているときは方位角が不定になるため前回値を保持する。
