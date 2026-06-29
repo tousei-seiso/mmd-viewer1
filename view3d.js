@@ -383,20 +383,24 @@ function applyModelYaw(targetUserDir) {
 //   こうすることで「仰角・方位角 → 位置」「pitch・yaw → lookAt」「roll → rotateZ」と
 //   責務が分離され、スマホをどう向けても座標系が崩壊しない。
 function updateCameraPose() {
-  // 1. デバイスの姿勢から、カメラが向くべき方向ベクトルを算出
-  // これにより、スマホをどう倒しても「モデルの方向」を維持できます
-  const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(_deviceQuat);
-  
-  // 2. カメラの位置（スマホの傾きに応じて移動する）
-  // targetDistanceは、カメラがターゲットから離れる距離
-  camera.position.copy(TARGET).add(forward.multiplyScalar(-currentDistance));
+  const angles = getOrientationAngles();
+  computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
+  currentDistance += (targetDistance - currentDistance) * ZOOM_SMOOTHING;
 
-  // 3. 姿勢は重力固定 + 向く方向の指定
+  // ① deviceQuat でカメラ前方ベクトルを求め、カメラ位置を Spherical で設定
+  //    カメラは TARGET から「-deviceForward」方向に currentDistance 離れた球面上
+  _cameraBack.set(0, 0, -1).applyQuaternion(_deviceQuat);
+  const phi   = Math.acos(THREE.MathUtils.clamp(-_cameraBack.y, -1, 1));
+  const theta = Math.atan2(-_cameraBack.x, -_cameraBack.z);
+  _spherical.set(currentDistance, phi, theta);
+  camera.position.setFromSpherical(_spherical).add(TARGET);
+
+  // ② WORLD_UP を維持しながら TARGET を向く（重力軸固定で pitch・yaw を自動解決）
   camera.up.set(0, 1, 0);
   camera.lookAt(TARGET);
 
-  // 4. ロール（ハンドル回し）のみを適用
-  // これで、スマホの傾きと、覗き窓の回転が完全に分離されます
+  // ③ デバイスのロール（gamma）をカメラのローカル Z 軸まわりに合成
+  //    gamma > 0 = 右側が下がる → camera.rotateZ(-gamma) でシーンが CCW に見える（自然な挙動）
   camera.rotateZ(-THREE.MathUtils.degToRad(angles.gamma ?? 0));
 }
 
