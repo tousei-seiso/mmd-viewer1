@@ -66,11 +66,12 @@ export function updateSway() {
 
 // --- DeviceOrientationEvent ―― ロール不変な方位角の取得 ----------------------
 //   DeviceMotion とは別イベント。
-//   ❗ event.alpha をそのまま方位角に使うと、画面法線（Z 軸）まわりのロール（ハンドルを
-//     回す動作）でも alpha 値が変化してしまい、カメラが意図せず周回する。
-//   ✅ W3C 回転行列 R（Earth→Device）の第 3 行（Row 2）= 端末 +Z 軸（画面法線）の
-//     ENU 座標を使う。ロールは画面法線を軸とした回転なので Row 2 は不変。
-//     Row 2 = [ -cosβ·sinγ,  sinβ,  cosβ·cosγ ]（alpha 依存なし）。
+//   ✅ W3C ZXY オイラー角からクォータニオンを構成し、ENU Z 軸（世界上方）まわりの
+//     スウィング・ツイスト分解でツイスト角（真方位）を抽出する。
+//     q = qZ(α)⊗qX(β)⊗qY(γ) の w 成分 fw と z 成分 fz だけで
+//     orientationAlpha = 2·atan2(fz, fw) が求まる。
+//     スクリーン法線（端末 Z）まわりのロールは fw/fz を変化させないため、
+//     カメラが意図せず周回することがない。
 const _DEG = Math.PI / 180;
 let orientationAlpha = null; // ラジアン。未受信時は null
 let orientationActive = false;
@@ -80,31 +81,27 @@ function onDeviceOrientation(event) {
   if (alpha == null || beta == null || gamma == null) return;
   orientationActive = true;
 
-  // W3C 回転行列 R = Rz(α)·Rx(β)·Ry(γ) は「Earth(ENU) → Device」変換。
-  // 画面法線（端末+Z軸）の ENU 座標 = R^T × (0,0,1) = R の【第3行（Row 2）】。
-  //   Row 2 = [ -cosβ·sinγ,  sinβ,  cosβ·cosγ ]
+  // W3C ZXY オイラー角 → クォータニオン → ENU Z 軸スウィング・ツイスト分解
+  //   q = qZ(α) ⊗ qX(β) ⊗ qY(γ)  [Earth(ENU) → Device]
   //
-  // ❗ Column 2 ≠ Row 2。以前の実装は列(Column 2)を使っていたため誤り。
+  // ツイスト（ENU Z まわりの回転）を抽出：
+  //   q_twist = normalize([fw, 0, 0, fz])
+  //   orientationAlpha = 2·atan2(fz, fw)
   //
-  // ロール不変の証明：
-  //   ロール = 端末+Z 軸まわりの回転 → R_new = Rz_dev(δ)·R_old
-  //   Row 2(R_new) = Rz(δ) の第3行 [0,0,1] × R_old = Row 2(R_old) → 不変 ✓
-  //
-  // 垂直軸（ENU Z）まわりの回転は Row 2 を変化させる → 方位角が変わる ✓
-  // alpha は Row 2 に依存しない（Rz(α) は Z 成分を保存するため）。
-  const cB = Math.cos(beta  * _DEG);
-  const sB = Math.sin(beta  * _DEG);
-  const cG = Math.cos(gamma * _DEG);
-  const sG = Math.sin(gamma * _DEG);
+  // ロール不変：端末 Z（画面法線）まわりの回転は fw・fz を変化させない。
+  // コンパス方向（世界上方まわりの回転）は alpha を変化させ fw・fz を変化させる。
+  const ha = alpha * _DEG * 0.5;
+  const hb = beta  * _DEG * 0.5;
+  const hg = gamma * _DEG * 0.5;
+  const ca = Math.cos(ha), sa = Math.sin(ha);
+  const cb = Math.cos(hb), sb = Math.sin(hb);
+  const cg = Math.cos(hg), sg = Math.sin(hg);
 
-  const snX = -cB * sG; // ENU 東成分
-  const snY =  sB;      // ENU 北成分
+  // q = qZ(α)⊗qX(β)⊗qY(γ) の w 成分と z 成分のみ計算：
+  const fw = ca*cb*cg - sa*sb*sg;
+  const fz = ca*sb*sg + sa*cb*cg;
 
-  // 水平成分が十分あるとき（スマホが概ね垂直）のみ方位角を更新する。
-  // 画面がほぼ真上/真下を向いているときは方位角が不定になるため前回値を保持する。
-  if (Math.hypot(snX, snY) > 0.1) {
-    orientationAlpha = Math.atan2(snX, snY);
-  }
+  orientationAlpha = 2.0 * Math.atan2(fz, fw);
 }
 
 // --- センサー値の参照 -------------------------------------------------------
