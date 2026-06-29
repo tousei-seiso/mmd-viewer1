@@ -582,10 +582,9 @@ export function resetView() {
   targetDistance = fitDist;
   currentDistance = fitDist;
 
-  // カメラをモデル正面位置へ配置し、重力基準 up + lookAt で AR 整合
+  // カメラをモデル正面位置へ配置し、クォータニオンを即時スナップ（slerp の初期値）
   camera.position.copy(TARGET).addScaledVector(_currentOrbitDir, currentDistance);
-  camera.up.copy(WORLD_UP);
-  camera.lookAt(TARGET);
+  camera.quaternion.copy(_resetTargetQuat);
 }
 
 // -----------------------------------------------------------------------------
@@ -1170,11 +1169,10 @@ export async function listMotions() {
 function animate() {
   requestAnimationFrame(animate);
 
-  // ---- クォータニオン軌道制御 + camera.lookAt によるAR整合 ------------------
-  //   effectiveQuat = dragQuat * _baseQuat * deviceQuat が示す +Z 方向（軌道方向）で
-  //   カメラ位置を決め、camera.up = WORLD_UP（重力基準）で camera.lookAt(TARGET) を
-  //   呼ぶことで「地面が水平に見える」AR 整合を毎フレーム保つ。
-  //   camera.quaternion は lookAt が設定するため直接は書き込まない。
+  // ---- クォータニオン直接適用によるカメラ制御 --------------------------------
+  //   finalQuat = dragQuat * _baseQuat * deviceQuat を camera.quaternion へ slerp。
+  //   camera.lookAt による上書きをやめ、スマホのロール・ピッチ・ヨーをそのまま反映。
+  //   カメラ位置は slerp 後の camera.quaternion の +Z 方向（= TARGET 方向の逆）から導出。
 
   // デバイスクォータニオンを更新（センサー未受信時は前回値を維持）
   const angles = getOrientationAngles();
@@ -1184,22 +1182,24 @@ function animate() {
   _dragEuler.set(dragPitch, dragYaw, 0, 'YXZ');
   _dragQuat.setFromEuler(_dragEuler);
 
-  // 目標軌道方向 = effectiveQuat の +Z 成分（TARGET から見てカメラがいる方向）
+  // finalQuat = dragQuat * _baseQuat * deviceQuat
+  //   _baseQuat = resetQuat * deviceQuat_at_reset^-1 なので、
+  //   リセット直後は finalQuat = resetQuat（正面構図）、
+  //   スマホを動かすと差分が加算されてカメラが追従する。
   _targetCamQuat.copy(_dragQuat).multiply(_baseQuat).multiply(_deviceQuat);
-  _cameraBack.set(0, 0, 1).applyQuaternion(_targetCamQuat);
 
-  // 軌道方向を lerp でスムーズに補間し正規化（球面補間の近似として十分）
-  _currentOrbitDir.lerp(_cameraBack, GYRO_SMOOTHING).normalize();
+  // camera.quaternion を slerp でスムーズに目標へ追従（lookAt 不使用・ロール反映）
+  camera.quaternion.slerp(_targetCamQuat, GYRO_SMOOTHING);
+
+  // カメラの +Z 方向（slerp 後）= TARGET からカメラへの軌道方向
+  _cameraBack.set(0, 0, 1).applyQuaternion(camera.quaternion);
+  _currentOrbitDir.copy(_cameraBack);   // 外部参照・位置計算用に保持
 
   // ズーム距離も滑らかに追従させる
   currentDistance += (targetDistance - currentDistance) * ZOOM_SMOOTHING;
 
-  // カメラ位置 = TARGET + 軌道方向 * 距離
+  // カメラ位置 = TARGET + 軌道方向 * 距離（quaternion と一致）
   camera.position.copy(TARGET).addScaledVector(_currentOrbitDir, currentDistance);
-
-  // 重力基準の up ベクトル（ワールドY軸 = 現実の上方向）で lookAt → AR 整合
-  camera.up.copy(WORLD_UP);
-  camera.lookAt(TARGET);
 
   // --- ダンス（VMD）と音源の強制同期 -------------------------------------------
   //   スマホで FPS が落ちても音と踊りがズレないよう、経過時間ではなく「音源の再生位置」
@@ -1349,8 +1349,7 @@ export function initView3d() {
 
   // 初期カメラ位置を正面構図へスナップ（animate 開始前の一発確定）
   camera.position.copy(TARGET).addScaledVector(_currentOrbitDir, currentDistance);
-  camera.up.copy(WORLD_UP);
-  camera.lookAt(TARGET);
+  camera.quaternion.copy(_frontViewQuat);   // slerp の初期値として正面構図を設定
 
   // 描画ループ開始
   animate();
