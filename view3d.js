@@ -361,9 +361,10 @@ const _resetCamPos     = new THREE.Vector3();
   const mat = new THREE.Matrix4().lookAt(camPos, TARGET, WORLD_UP);
   _frontViewQuat.setFromRotationMatrix(mat);
 }
-// 基準クォータニオンと軌道方向を正面構図で初期化
-_baseQuat.copy(_frontViewQuat);
-_currentOrbitDir.set(0, 0, 1).applyQuaternion(_frontViewQuat);
+// _baseQuat: identity（スマホの物理的な向きをそのまま軌道方向にマッピング）
+// _currentOrbitDir: スマホ直立・正面向き時の初期位置（+Z 方向）
+// ※ _frontViewQuat は上記の lookAt 計算のためだけに使用。_baseQuat とは無関係。
+_currentOrbitDir.set(0, 0, 1);
 
 // alpha/beta/gamma（度単位）からデバイスクォータニオンを計算し _deviceQuat へ書き込む
 // （Three.js DeviceOrientationControls の変換式準拠）
@@ -545,46 +546,21 @@ function computeFitDistance() {
   return clamp(dist, MIN_DISTANCE, MAX_DISTANCE);
 }
 
-// カメラを正面・全身表示へリセットする（現在のデバイス姿勢を基準にキャリブレーション）
-//   ・モデルの向き（BaseRotation）は変更しない。
-//   ・_currentOrbitDir をモデルの正面方向（BASE_YAW/PITCH）へスナップする。
-//   ・targetQuat = lookAt(正面カメラ位置, TARGET, WORLD_UP) から算出し、
-//     現在の deviceQuat との差分を _baseQuat として保持する。
-//   ・camera.up は常に WORLD_UP (0,1,0)。スマホの傾きはクォータニオン合成のみで表現。
+// カメラをリセットする（ドラッグ解除 ＋ ズーム最適化のみ）
+//   スマホの物理的な向きがそのまま軌道方向に対応するため、
+//   リセットは「位置の強制」ではなく「距離調整 ＋ ドラッグ解除」のみ行う。
+//     スマホ水平（床置き・画面上向き）→ 真上からの俯瞰視点
+//     スマホ直立（正面向き）         → モデル正面からの視点
+//   camera.up = WORLD_UP を animate() が毎フレーム維持するため、
+//   ハンドル回転（ロール）はカメラ位置の軌道変化に変換され、モデルは常に上向きを保つ。
 export function resetView() {
-  // ドラッグで付いた周回・見上げ/見下ろしのオフセットを解除
   dragYaw = 0;
   dragPitch = 0;
-
-  // 現在のデバイスクォータニオンを更新
-  const angles = getOrientationAngles();
-  computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
-
-  // モデルの正面方向（_frontViewQuat の +Z = TARGET からカメラへの単位ベクトル）へスナップ
-  _currentOrbitDir.set(0, 0, 1).applyQuaternion(_frontViewQuat);
-
-  // バウンディングボックスから最適距離を算出し、正面カメラ位置を確定
+  // _baseQuat を identity に戻す: スマホの向き = カメラの軌道方向（キャリブレーション解除）
+  _baseQuat.identity();
   const fitDist = computeFitDistance();
-  _resetCamPos.copy(TARGET).addScaledVector(_currentOrbitDir, fitDist);
-
-  // targetQuat = setFromRotationMatrix( lookAt(正面カメラ位置, TARGET, WORLD_UP) )
-  //   カメラが物理的に「モデル正面から TARGET を向く」姿勢のクォータニオン。
-  _resetLookAtMat.lookAt(_resetCamPos, TARGET, WORLD_UP);
-  _resetTargetQuat.setFromRotationMatrix(_resetLookAtMat);
-
-  // _baseQuat = targetQuat * deviceQuat^-1
-  //   → リセット直後: effectiveQuat = _baseQuat * deviceQuat = targetQuat（正面構図）
-  //   スマホの傾きが加わると _dragQuat * _baseQuat * deviceQuat で自然にズレる。
-  _baseQuat.copy(_deviceQuat).conjugate();   // _baseQuat = deviceQuat^-1
-  _baseQuat.premultiply(_resetTargetQuat);   // _baseQuat = targetQuat * deviceQuat^-1
-
-  // 距離を即時適用（lerp 待ちなし）
   targetDistance = fitDist;
   currentDistance = fitDist;
-
-  // カメラをモデル正面位置へ配置し、クォータニオンを即時スナップ（slerp の初期値）
-  camera.position.copy(TARGET).addScaledVector(_currentOrbitDir, currentDistance);
-  camera.quaternion.copy(_resetTargetQuat);
 }
 
 // -----------------------------------------------------------------------------
@@ -1169,10 +1145,12 @@ export async function listMotions() {
 function animate() {
   requestAnimationFrame(animate);
 
-  // ---- クォータニオン直接適用によるカメラ制御 --------------------------------
-  //   finalQuat = dragQuat * _baseQuat * deviceQuat を camera.quaternion へ slerp。
-  //   camera.lookAt による上書きをやめ、スマホのロール・ピッチ・ヨーをそのまま反映。
-  //   カメラ位置は slerp 後の camera.quaternion の +Z 方向（= TARGET 方向の逆）から導出。
+  // ---- クォータニオン軌道制御 + camera.lookAt による AR 整合 ------------------
+  //   finalQuat = dragQuat * _baseQuat * deviceQuat の +Z 方向を軌道方向とし、
+  //   camera.up = WORLD_UP で camera.lookAt(TARGET) を毎フレーム呼ぶことで
+  //   モデルが重力基準の上方向を保ったまま常に画面中央に表示される。
+  //   スマホのロール（ハンドル回転）は lookAt によりカメラの位置変化に変換され、
+  //   モデル自体が傾くことはない。
 
   // デバイスクォータニオンを更新（センサー未受信時は前回値を維持）
   const angles = getOrientationAngles();
@@ -1183,23 +1161,24 @@ function animate() {
   _dragQuat.setFromEuler(_dragEuler);
 
   // finalQuat = dragQuat * _baseQuat * deviceQuat
-  //   _baseQuat = resetQuat * deviceQuat_at_reset^-1 なので、
-  //   リセット直後は finalQuat = resetQuat（正面構図）、
-  //   スマホを動かすと差分が加算されてカメラが追従する。
+  //   _baseQuat = identity のとき: スマホの物理的な向き = カメラの軌道方向
+  //     スマホ水平 → 俯瞰。スマホ直立正面向き → 正面視点。
+  //   ハンドル回転（alpha 変化）→ _cameraBack が水平に変化 → 水平軌道。
   _targetCamQuat.copy(_dragQuat).multiply(_baseQuat).multiply(_deviceQuat);
 
-  // camera.quaternion を slerp でスムーズに目標へ追従（lookAt 不使用・ロール反映）
-  camera.quaternion.slerp(_targetCamQuat, GYRO_SMOOTHING);
-
-  // カメラの +Z 方向（slerp 後）= TARGET からカメラへの軌道方向
-  _cameraBack.set(0, 0, 1).applyQuaternion(camera.quaternion);
-  _currentOrbitDir.copy(_cameraBack);   // 外部参照・位置計算用に保持
+  // +Z 方向（TARGET からカメラへの方向）を lerp でスムーズに補間
+  _cameraBack.set(0, 0, 1).applyQuaternion(_targetCamQuat);
+  _currentOrbitDir.lerp(_cameraBack, GYRO_SMOOTHING).normalize();
 
   // ズーム距離も滑らかに追従させる
   currentDistance += (targetDistance - currentDistance) * ZOOM_SMOOTHING;
 
-  // カメラ位置 = TARGET + 軌道方向 * 距離（quaternion と一致）
+  // カメラ位置 = TARGET + 軌道方向 * 距離
   camera.position.copy(TARGET).addScaledVector(_currentOrbitDir, currentDistance);
+
+  // WORLD_UP で lookAt → ロールはカメラ位置の変化に吸収、モデルは常に上向き
+  camera.up.copy(WORLD_UP);
+  camera.lookAt(TARGET);
 
   // --- ダンス（VMD）と音源の強制同期 -------------------------------------------
   //   スマホで FPS が落ちても音と踊りがズレないよう、経過時間ではなく「音源の再生位置」
@@ -1347,9 +1326,10 @@ export function initView3d() {
   // 起動時の初期表示
   setNowPlaying('🎵 モーション未選択');
 
-  // 初期カメラ位置を正面構図へスナップ（animate 開始前の一発確定）
+  // 初期カメラ位置を確定（animate 開始前の一発セット）
   camera.position.copy(TARGET).addScaledVector(_currentOrbitDir, currentDistance);
-  camera.quaternion.copy(_frontViewQuat);   // slerp の初期値として正面構図を設定
+  camera.up.copy(WORLD_UP);
+  camera.lookAt(TARGET);
 
   // 描画ループ開始
   animate();
