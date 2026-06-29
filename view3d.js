@@ -375,18 +375,18 @@ function applyModelYaw(targetUserDir) {
 
 // 毎フレーム呼ばれるカメラ姿勢更新
 //   軌道位置 = TARGET + (0,0,1).applyQuat(deviceQuat) * currentDistance
-//   camera.quaternion = deviceQuat を直接代入することで、(0,0,-1).applyQuat(deviceQuat)
-//   = -orbitDir が常に TARGET を向く（数学的に保証）。
-//   camera.up = WORLD_UP により、スマホのロールはカメラ姿勢のロールではなく
-//   水平軌道位置の変化として現れ、モデルは常に直立を維持する。
+//   camera.up = WORLD_UP を設定してから camera.lookAt(TARGET) を呼ぶことで、
+//   スマホのロール（ハンドル回転）はカメラ位置の軌道変化として現れるが、
+//   カメラ自身の姿勢ロールは除去され、モデルは常に直立を維持する。
+//   ※ camera.quaternion を直接代入すると camera.up が無視されるため lookAt を使う。
 function updateCameraPose() {
   const angles = getOrientationAngles();
   computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
   _cameraBack.set(0, 0, 1).applyQuaternion(_deviceQuat);
   currentDistance += (targetDistance - currentDistance) * ZOOM_SMOOTHING;
   camera.position.copy(TARGET).addScaledVector(_cameraBack, currentDistance);
-  camera.quaternion.copy(_deviceQuat);
   camera.up.copy(WORLD_UP);
+  camera.lookAt(TARGET);
 }
 
 // -----------------------------------------------------------------------------
