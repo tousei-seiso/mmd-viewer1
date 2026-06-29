@@ -383,24 +383,20 @@ function applyModelYaw(targetUserDir) {
 //   こうすることで「仰角・方位角 → 位置」「pitch・yaw → lookAt」「roll → rotateZ」と
 //   責務が分離され、スマホをどう向けても座標系が崩壊しない。
 function updateCameraPose() {
-  const angles = getOrientationAngles();
-  computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
-  currentDistance += (targetDistance - currentDistance) * ZOOM_SMOOTHING;
-
-  // ① 位置の決定: モデルを正面から見るための固定的な球座標に修正
-  // スマホを倒してもカメラが地面に潜らないよう、phi（仰角）を固定または制限する
-  // 仰角 phi を 90度 (PI/2) 付近に固定すれば、カメラは常に水平目線になる
-  const phi = Math.PI / 2; // 水平目線固定
-  const theta = -THREE.MathUtils.degToRad(angles.alpha ?? 0); // 方位のみデバイスに追従
+  // 1. デバイスの姿勢から、カメラが向くべき方向ベクトルを算出
+  // これにより、スマホをどう倒しても「モデルの方向」を維持できます
+  const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(_deviceQuat);
   
-  _spherical.set(currentDistance, phi, theta);
-  camera.position.setFromSpherical(_spherical).add(TARGET);
+  // 2. カメラの位置（スマホの傾きに応じて移動する）
+  // targetDistanceは、カメラがターゲットから離れる距離
+  camera.position.copy(TARGET).add(forward.multiplyScalar(-currentDistance));
 
-  // ② 重力軸を維持してモデルを向く
+  // 3. 姿勢は重力固定 + 向く方向の指定
   camera.up.set(0, 1, 0);
   camera.lookAt(TARGET);
 
-  // ③ ロールの合成
+  // 4. ロール（ハンドル回し）のみを適用
+  // これで、スマホの傾きと、覗き窓の回転が完全に分離されます
   camera.rotateZ(-THREE.MathUtils.degToRad(angles.gamma ?? 0));
 }
 
