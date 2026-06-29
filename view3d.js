@@ -61,8 +61,6 @@ const ORBIT_RADIUS = 30;
 const BASE_YAW = THREE.MathUtils.degToRad(16);    // 少し斜め（横方向）
 const BASE_PITCH = THREE.MathUtils.degToRad(-15); // 少し上から見下ろす（負＝見下ろし）
 
-// クォータニオン slerp の追従の滑らかさ（0〜1。1 に近いほど即時）
-const GYRO_SMOOTHING = 0.2;
 
 // カメラの up ベクトルに使う定数（frontViewQuat 計算に使用）
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
@@ -322,10 +320,14 @@ export async function switchModel(path) {
 }
 
 // -----------------------------------------------------------------------------
-// クォータニオンベースのカメラ制御
-//   DeviceOrientationEvent の alpha/beta/gamma から deviceQuaternion を構成し、
-//   camera.quaternion = _baseQuat * deviceQuat として直接適用する。
-//   Three.js DeviceOrientationControls の実装に準拠（垂直軸まわり回転 = カメラ Yaw）。
+// カメラ制御
+//   DeviceOrientationEvent の alpha/beta/gamma から deviceQuat を構成し、
+//   camera.quaternion = deviceQuat として直接代入する（AR スタイル）。
+//   カメラ位置は (0,0,1).applyQuat(deviceQuat) * currentDistance の軌道。
+//   スマホのロール（ハンドル回転）は camera.up = WORLD_UP によりカメラ位置の
+//   変化に変換される（モデルは常に upright を保つ）。
+//
+//   モデルの正面方向はリセット時に applyModelYaw() で調整する。
 // -----------------------------------------------------------------------------
 
 function clamp(value, min, max) {
@@ -335,39 +337,12 @@ function clamp(value, min, max) {
 // デバイス座標系 → カメラ座標系補正（X 軸まわり -90°）
 const _Q_CORR_X = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
 
-// フレームごとに使い回す一時オブジェクト（毎フレームの GC を抑制）
-const _euler_dq        = new THREE.Euler();
-const _deviceQuat      = new THREE.Quaternion();
-const _baseQuat        = new THREE.Quaternion();       // リセット時に更新される基準クォータニオン
-const _frontViewQuat   = new THREE.Quaternion();       // BASE_YAW/PITCH で決まる正面構図
-const _cameraBack      = new THREE.Vector3();          // 目標軌道方向（_targetCamQuat の +Z）
-const _currentOrbitDir = new THREE.Vector3();          // 現在の軌道方向（lerp でスムーズ補間）
-const _dragEuler       = new THREE.Euler();
-const _dragQuat        = new THREE.Quaternion();
-const _targetCamQuat   = new THREE.Quaternion();
-// resetView() 専用の一時オブジェクト（毎回 new を避けるため）
-const _resetTargetQuat = new THREE.Quaternion();
-const _resetLookAtMat  = new THREE.Matrix4();
-const _resetCamPos     = new THREE.Vector3();
+// フレームごとに使い回す一時オブジェクト
+const _euler_dq   = new THREE.Euler();
+const _deviceQuat = new THREE.Quaternion();
+const _cameraBack = new THREE.Vector3(); // deviceQuat 由来の軌道方向ベクトル
 
-// 正面構図クォータニオンを起動時に 1 回計算する（BASE_YAW / BASE_PITCH から導出）
-{
-  const cosP = Math.cos(BASE_PITCH);
-  const camPos = new THREE.Vector3(
-    TARGET.x + Math.sin(BASE_YAW) * cosP * ORBIT_RADIUS,
-    TARGET.y - Math.sin(BASE_PITCH) * ORBIT_RADIUS,
-    TARGET.z + Math.cos(BASE_YAW) * cosP * ORBIT_RADIUS
-  );
-  const mat = new THREE.Matrix4().lookAt(camPos, TARGET, WORLD_UP);
-  _frontViewQuat.setFromRotationMatrix(mat);
-}
-// _baseQuat: identity（スマホの物理的な向きをそのまま軌道方向にマッピング）
-// _currentOrbitDir: スマホ直立・正面向き時の初期位置（+Z 方向）
-// ※ _frontViewQuat は上記の lookAt 計算のためだけに使用。_baseQuat とは無関係。
-_currentOrbitDir.set(0, 0, 1);
-
-// alpha/beta/gamma（度単位）からデバイスクォータニオンを計算し _deviceQuat へ書き込む
-// （Three.js DeviceOrientationControls の変換式準拠）
+// alpha/beta/gamma（度単位）→ _deviceQuat（Three.js DeviceOrientationControls 準拠）
 function computeDeviceQuat(alpha, beta, gamma) {
   _euler_dq.set(
     THREE.MathUtils.degToRad(beta  ?? 0),
@@ -379,10 +354,43 @@ function computeDeviceQuat(alpha, beta, gamma) {
   _deviceQuat.multiply(_Q_CORR_X);
 }
 
+// モデルの Yaw（Y軸回転）を targetUserDir の方向に合わせる（リセット時のみ呼ぶ）
+//   targetUserDir: ワールド空間での「モデル中心からユーザーへの方向」ベクトル（XZ 平面）
+//   モデルのローカル前面（+Z 軸）がその方向を向くよう、WORLD_UP 軸まわりに回転する。
+//   モデルの座標・ピッチ・ロールは一切変更しない。
+function applyModelYaw(targetUserDir) {
+  if (!currentModel) return;
+  // モデルのワールド姿勢を取得してローカル前面（+Z）をワールド座標に変換
+  const wq = new THREE.Quaternion();
+  currentModel.getWorldQuaternion(wq);
+  const modelFront = new THREE.Vector3(0, 0, 1).applyQuaternion(wq);
+  // XZ 平面での現在 Yaw と目標 Yaw（atan2(x, z) = +Z 軸からの水平角）
+  const currentYaw = Math.atan2(modelFront.x, modelFront.z);
+  const targetYaw  = Math.atan2(targetUserDir.x, targetUserDir.z);
+  let diff = targetYaw - currentYaw;
+  while (diff >  Math.PI) diff -= 2 * Math.PI;
+  while (diff < -Math.PI) diff += 2 * Math.PI;
+  currentModel.rotateOnWorldAxis(WORLD_UP, diff);
+}
+
+// 毎フレーム呼ばれるカメラ姿勢更新
+//   軌道位置 = TARGET + (0,0,1).applyQuat(deviceQuat) * currentDistance
+//   camera.quaternion = deviceQuat を直接代入することで、(0,0,-1).applyQuat(deviceQuat)
+//   = -orbitDir が常に TARGET を向く（数学的に保証）。
+//   camera.up = WORLD_UP により、スマホのロールはカメラ姿勢のロールではなく
+//   水平軌道位置の変化として現れ、モデルは常に直立を維持する。
+function updateCameraPose() {
+  const angles = getOrientationAngles();
+  computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
+  _cameraBack.set(0, 0, 1).applyQuaternion(_deviceQuat);
+  currentDistance += (targetDistance - currentDistance) * ZOOM_SMOOTHING;
+  camera.position.copy(TARGET).addScaledVector(_cameraBack, currentDistance);
+  camera.quaternion.copy(_deviceQuat);
+  camera.up.copy(WORLD_UP);
+}
+
 // -----------------------------------------------------------------------------
 // タッチ／マウス操作 ―― ドラッグ回転 ＆ ピンチ/ホイールズーム
-//   ドラッグ由来のオフセット（dragYaw/dragPitch）は描画ループで _dragQuat として
-//   クォータニオン合成に組み込まれる（device quaternion と競合しない）。
 //   ピンチ/ホイール由来の距離（currentDistance）はカメラ後方ベクトルのスケールに使う。
 // -----------------------------------------------------------------------------
 
@@ -546,45 +554,21 @@ function computeFitDistance() {
   return clamp(dist, MIN_DISTANCE, MAX_DISTANCE);
 }
 
-// カメラをリセットする（Yaw のみキャリブレーション ＋ ズーム最適化）
-//
-//   スマホの「傾き」（beta/gamma → 垂直方向）はそのままカメラ視点に対応させる：
-//     スマホ水平（床置き・画面上向き）→ 俯瞰視点
-//     スマホ直立（正面向き）         → 水平視点
-//
-//   スマホの「水平方向」（alpha = コンパス）だけをキャリブレーションする：
-//     リセット時点でのコンパス方向を「モデル正面（+Z）」に対応付ける Y 軸回転を
-//     _baseQuat に保存する。
-//     これにより、ユーザーがどの方角を向いていても「スマホを自分に向けると
-//     モデルがこちらを向く」という動作が成立する。
-//
-//   camera.up = WORLD_UP を animate() が毎フレーム維持するため、
-//   ハンドル回転（ロール）はカメラ位置の軌道変化に変換され、モデルは常に上向きを保つ。
+// カメラをリセットする
+//   リセット時点のスマホが向いている方向（orbitDir）をユーザーの方向と見なし、
+//   モデルの正面（ローカル +Z）がその方向を向くよう applyModelYaw() で回転させる。
+//   ズームは computeFitDistance() で最適距離を求めて即時反映する。
 export function resetView() {
   dragYaw = 0;
   dragPitch = 0;
 
-  // 現在のデバイスクォータニオンを取得
+  // 現在のデバイスクォータニオンからユーザーの方向（= カメラ軌道方向）を求める
   const angles = getOrientationAngles();
   computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
-
-  // 現在の軌道方向ベクトル = (0,0,1).applyQuat(deviceQuat)
   _cameraBack.set(0, 0, 1).applyQuaternion(_deviceQuat);
 
-  // Yaw キャリブレーション:
-  //   水平成分（X-Z 平面内の角度）だけを抽出し、それを打ち消す Y 軸回転を _baseQuat に設定。
-  //   垂直成分（Y）は一切変えないため、スマホの傾き（俯瞰 ↔ 水平）はそのまま保たれる。
-  //   atan2(x, z) = +Z 軸から現在の水平方向までの角度（Y 軸まわり）
-  const horizX = _cameraBack.x;
-  const horizZ = _cameraBack.z;
-  const horizLen = Math.sqrt(horizX * horizX + horizZ * horizZ);
-  if (horizLen > 0.01) {
-    // Y 軸まわりに -angle だけ回転させて水平成分を +Z へ揃える
-    _baseQuat.setFromAxisAngle(WORLD_UP, -Math.atan2(horizX, horizZ));
-  } else {
-    // ほぼ真上/真下を向いているとき（俯瞰・仰角）は水平キャリブレーション不要
-    _baseQuat.identity();
-  }
+  // モデルの正面をユーザー方向へ向ける（Y 軸回転のみ）
+  applyModelYaw(_cameraBack);
 
   const fitDist = computeFitDistance();
   targetDistance = fitDist;
@@ -1173,40 +1157,8 @@ export async function listMotions() {
 function animate() {
   requestAnimationFrame(animate);
 
-  // ---- クォータニオン軌道制御 + camera.lookAt による AR 整合 ------------------
-  //   finalQuat = dragQuat * _baseQuat * deviceQuat の +Z 方向を軌道方向とし、
-  //   camera.up = WORLD_UP で camera.lookAt(TARGET) を毎フレーム呼ぶことで
-  //   モデルが重力基準の上方向を保ったまま常に画面中央に表示される。
-  //   スマホのロール（ハンドル回転）は lookAt によりカメラの位置変化に変換され、
-  //   モデル自体が傾くことはない。
-
-  // デバイスクォータニオンを更新（センサー未受信時は前回値を維持）
-  const angles = getOrientationAngles();
-  computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
-
-  // ドラッグオフセットをクォータニオンで表現（Yaw: 世界Y軸、Pitch: その後X軸）
-  _dragEuler.set(dragPitch, dragYaw, 0, 'YXZ');
-  _dragQuat.setFromEuler(_dragEuler);
-
-  // finalQuat = dragQuat * _baseQuat * deviceQuat
-  //   _baseQuat = identity のとき: スマホの物理的な向き = カメラの軌道方向
-  //     スマホ水平 → 俯瞰。スマホ直立正面向き → 正面視点。
-  //   ハンドル回転（alpha 変化）→ _cameraBack が水平に変化 → 水平軌道。
-  _targetCamQuat.copy(_dragQuat).multiply(_baseQuat).multiply(_deviceQuat);
-
-  // +Z 方向（TARGET からカメラへの方向）を lerp でスムーズに補間
-  _cameraBack.set(0, 0, 1).applyQuaternion(_targetCamQuat);
-  _currentOrbitDir.lerp(_cameraBack, GYRO_SMOOTHING).normalize();
-
-  // ズーム距離も滑らかに追従させる
-  currentDistance += (targetDistance - currentDistance) * ZOOM_SMOOTHING;
-
-  // カメラ位置 = TARGET + 軌道方向 * 距離
-  camera.position.copy(TARGET).addScaledVector(_currentOrbitDir, currentDistance);
-
-  // WORLD_UP で lookAt → ロールはカメラ位置の変化に吸収、モデルは常に上向き
-  camera.up.copy(WORLD_UP);
-  camera.lookAt(TARGET);
+  // ---- カメラ姿勢更新 ---------------------------------------------------------
+  updateCameraPose();
 
   // --- ダンス（VMD）と音源の強制同期 -------------------------------------------
   //   スマホで FPS が落ちても音と踊りがズレないよう、経過時間ではなく「音源の再生位置」
@@ -1354,10 +1306,8 @@ export function initView3d() {
   // 起動時の初期表示
   setNowPlaying('🎵 モーション未選択');
 
-  // 初期カメラ位置を確定（animate 開始前の一発セット）
-  camera.position.copy(TARGET).addScaledVector(_currentOrbitDir, currentDistance);
-  camera.up.copy(WORLD_UP);
-  camera.lookAt(TARGET);
+  // 初期カメラ位置を確定（センサー未受信のため identity deviceQuat → +Z 方向）
+  updateCameraPose();
 
   // 描画ループ開始
   animate();
