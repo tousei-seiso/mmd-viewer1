@@ -67,6 +67,7 @@ export function updateSway() {
 // --- センサー値の参照 -------------------------------------------------------
 export function getAcc() { return { x: accX, y: accY, z: accZ }; }
 export function getSway() { return { x: swayX, y: swayY, z: swayZ }; }
+export function getGrav() { return { x: gravX, y: gravY, z: gravZ }; }
 
 // --- 診断（デバッグ）表示の状態 ---------------------------------------------
 export function isSwayDebug() { return swayDebug; }

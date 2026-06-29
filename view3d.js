@@ -24,6 +24,7 @@ import {
   SWAY_ROT_MAX,
   updateSway,
   getSway,
+  getGrav,
   renderSwayDebug,
 } from './sensor.js';
 
@@ -59,10 +60,9 @@ const ORBIT_RADIUS = 30;
 const BASE_YAW = THREE.MathUtils.degToRad(16);    // 少し斜め（横方向）
 const BASE_PITCH = THREE.MathUtils.degToRad(-15); // 少し上から見下ろす（負＝見下ろし）
 
-// ジャイロ各成分の感度と向き（あべこべなら DIR を -1 に）
-const GYRO_YAW_SENS = 1.0,   GYRO_YAW_DIR = 1;   // 上下軸回転 → 水平周回（ワールドY軸）
-const GYRO_PITCH_SENS = 1.0, GYRO_PITCH_DIR = 1; // 前後傾き   → 見上げ／見下ろし（ローカルX軸）
-const GYRO_ROLL_SENS = 1.0,  GYRO_ROLL_DIR = -1; // 左右傾き   → 画面の傾き（ローカルZ軸＝視線軸）
+// 重力ベクトル → カメラ角度の感度と向き（あべこべなら DIR を -1 に）
+const GYRO_YAW_SENS = 1.0,   GYRO_YAW_DIR = 1;   // 左右傾き → 水平周回（ワールドY軸）
+const GYRO_PITCH_SENS = 1.0, GYRO_PITCH_DIR = 1; // 前後傾き → 見上げ／見下ろし（ローカルX軸）
 
 const GYRO_SMOOTHING = 0.2; // 角度の追従の滑らかさ（0〜1。1 に近いほど即時）
 
@@ -330,19 +330,10 @@ export async function switchModel(path) {
 }
 
 // -----------------------------------------------------------------------------
-// ジャイロ（傾きセンサー）連動 ―― ワールド基準のクォータニオン合成
-//
-//   重要な前提：スマホを縦に立てて持つと、オイラー角と物理的な動きの対応がズレる
-//   （Yaw が gamma の ±90° 制限に、Roll が alpha に出るなど）。生のオイラー角を軸へ
-//   バラバラに代入すると、軸が斜めに引きずられて干渉し、Roll が周回に混ざる／Yaw が
-//   ワープ・反転する。
-//
-//   そこで、まずデバイス姿勢クォータニオンを作り、そこから「物理的に独立した 3 成分」を
-//   姿勢に依存しない形で抽出する：
-//     ・Yaw   ＝ 視線方向を水平面へ投影した方位角（Roll でも Pitch でも変化しない）
-//     ・Pitch ＝ 視線方向の仰角（asin(viewDir.y)。Roll で変化しない）
-//     ・Roll  ＝ 視線軸まわりの「上ベクトル」のねじれ角（Yaw/Pitch から独立）
-//   抽出した 3 つを、描画ループで独立クォータニオンとして合成する。
+// 重力ベクトル連動 ―― getGrav() を基にしたカメラ Yaw/Pitch の計算
+//   sensor.js の getGrav() から低域通過済みの重力推定値を毎フレーム取得し、
+//   左右傾き（gravX）→ Yaw（水平周回）、前後傾き（gravZ）→ Pitch（仰角）へ変換する。
+//   Roll は重力だけでは求まらないため 0 固定。DeviceOrientation イベントは不要。
 // -----------------------------------------------------------------------------
 
 function clamp(value, min, max) {
@@ -354,87 +345,14 @@ function wrapAngle(rad) {
   return Math.atan2(Math.sin(rad), Math.cos(rad));
 }
 
-// --- DeviceOrientation のオイラー角 → デバイス姿勢クォータニオン -------------
-//   （Three.js DeviceOrientationControls と同一ロジック）
-const _zee = new THREE.Vector3(0, 0, 1);
-const _euler = new THREE.Euler();
-const _q0 = new THREE.Quaternion();
-const _q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); // -90°(X軸)
-const _deviceQuat = new THREE.Quaternion();
-const _viewDir = new THREE.Vector3(); // デバイスの視線方向（forward）
-const _devUp = new THREE.Vector3();   // デバイスの上方向（up）
-const _refUp = new THREE.Vector3();   // ロール 0 のときの基準 up（worldUp を視線に直交化）
-const _cross = new THREE.Vector3();
-
-function buildDeviceQuaternion(quat, alpha, beta, gamma, screenOrient) {
-  _euler.set(beta, alpha, -gamma, 'YXZ');
-  quat.setFromEuler(_euler);
-  quat.multiply(_q1);
-  quat.multiply(_q0.setFromAxisAngle(_zee, -screenOrient));
-  return quat;
-}
-
-// 現在の画面の向き（角度）をラジアンで返す（縦ロック中は通常 0）
-function getScreenOrientation() {
-  const angle =
-    (screen.orientation && typeof screen.orientation.angle === 'number')
-      ? screen.orientation.angle
-      : (typeof window.orientation === 'number' ? window.orientation : 0);
-  return THREE.MathUtils.degToRad(angle);
-}
-
 // Yaw は「方位角の累積」で連続化する（atan2 の ±π 折り返しをアンラップ）。
-// これによりスマホを何周回しても飛ばずに、ぐるぐると連続して周回できる。
 let prevHeading = null;  // 直前フレームの方位角（ラジアン）
 let yawAccum = 0;        // 起動時を 0 とした累積 Yaw（ラジアン）
 let neutralPitch = null; // Pitch の基準（中立）
-let neutralRoll = null;  // Roll の基準（中立）
 
-// 抽出した 3 成分の「目標値」と、滑らかに追従させる「現在値」（ラジアン）
+// 3 成分の「目標値」と、滑らかに追従させる「現在値」（ラジアン）
 let targetYaw = 0, targetPitch = 0, targetRoll = 0;
 let currentYaw = 0, currentPitch = 0, currentRoll = 0;
-
-function onDeviceOrientation(event) {
-  // 必要な角度が取れない端末・未許可では何もしない
-  if (event.alpha === null || event.beta === null || event.gamma === null) return;
-
-  const alpha = THREE.MathUtils.degToRad(event.alpha);
-  const beta = THREE.MathUtils.degToRad(event.beta);
-  const gamma = THREE.MathUtils.degToRad(event.gamma);
-
-  // デバイス姿勢クォータニオンと、その視線方向・上方向ベクトルを求める
-  buildDeviceQuaternion(_deviceQuat, alpha, beta, gamma, getScreenOrientation());
-  _viewDir.set(0, 0, -1).applyQuaternion(_deviceQuat).normalize();
-  _devUp.set(0, 1, 0).applyQuaternion(_deviceQuat).normalize();
-
-  // --- Yaw：視線方向の水平成分の方位角（Roll/Pitch から独立） ----------------
-  const horizLenSq = _viewDir.x * _viewDir.x + _viewDir.z * _viewDir.z;
-  if (horizLenSq > 1e-6) { // ほぼ真上／真下を向いているときは更新しない（方位が不定）
-    const heading = Math.atan2(_viewDir.x, _viewDir.z);
-    if (prevHeading === null) prevHeading = heading;
-    yawAccum += wrapAngle(heading - prevHeading); // 差分を累積＝連続化（ワープ防止）
-    prevHeading = heading;
-    targetYaw = yawAccum * GYRO_YAW_SENS * GYRO_YAW_DIR;
-  }
-
-  // --- Pitch：視線方向の仰角（Roll から独立） --------------------------------
-  const pitch = Math.asin(clamp(_viewDir.y, -1, 1));
-  if (neutralPitch === null) neutralPitch = pitch;
-  targetPitch = (pitch - neutralPitch) * GYRO_PITCH_SENS * GYRO_PITCH_DIR;
-
-  // --- Roll：視線軸まわりの up のねじれ角（Yaw/Pitch から独立） --------------
-  // 基準 up ＝ world up から「視線方向成分」を取り除いたもの（視線に直交）
-  _refUp.copy(WORLD_Y).addScaledVector(_viewDir, -WORLD_Y.dot(_viewDir));
-  if (_refUp.lengthSq() > 1e-6) { // 視線がほぼ垂直だと基準 up が不定 → 更新しない
-    _refUp.normalize();
-    let roll = Math.acos(clamp(_refUp.dot(_devUp), -1, 1));
-    // 符号：基準 up→デバイス up の回転が視線軸まわりに正か負か
-    _cross.crossVectors(_refUp, _devUp);
-    if (_cross.dot(_viewDir) < 0) roll = -roll;
-    if (neutralRoll === null) neutralRoll = roll;
-    targetRoll = wrapAngle(roll - neutralRoll) * GYRO_ROLL_SENS * GYRO_ROLL_DIR;
-  }
-}
 
 // -----------------------------------------------------------------------------
 // タッチ／マウス操作 ―― ドラッグ回転 ＆ ピンチ/ホイールズーム（ジャイロと共存）
@@ -615,7 +533,6 @@ export function resetView() {
   yawAccum = 0;
   prevHeading = null;
   neutralPitch = null;
-  neutralRoll = null;
   targetYaw = 0;
   targetPitch = 0;
   targetRoll = 0;
@@ -1213,7 +1130,28 @@ const _offset = new THREE.Vector3();
 function animate() {
   requestAnimationFrame(animate);
 
-  // ジャイロの各成分を目標へ滑らかに追従させる（lerp）
+  // 重力ベクトルから Yaw/Pitch を毎フレーム更新（sensor.js の getGrav() を使用）
+  const grav = getGrav();
+  const gl = Math.hypot(grav.x, grav.y, grav.z);
+  if (gl > 0.5) {
+    const gx = grav.x / gl;
+    const gy = grav.y / gl;
+    const gz = grav.z / gl;
+    // Yaw: 左右傾き（縦持ち正面で 0、傾けると累積）
+    const heading = Math.atan2(-gx, -gy);
+    if (prevHeading === null) prevHeading = heading;
+    yawAccum += wrapAngle(heading - prevHeading);
+    prevHeading = heading;
+    targetYaw = yawAccum * GYRO_YAW_SENS * GYRO_YAW_DIR;
+    // Pitch: 前後傾き（gz = sin(仰角)）
+    const rawPitch = Math.asin(clamp(gz, -1, 1));
+    if (neutralPitch === null) neutralPitch = rawPitch;
+    targetPitch = (rawPitch - neutralPitch) * GYRO_PITCH_SENS * GYRO_PITCH_DIR;
+    // Roll は重力から求まらないため常に 0
+    targetRoll = 0;
+  }
+
+  // 各成分を目標へ滑らかに追従させる（lerp）
   currentYaw += (targetYaw - currentYaw) * GYRO_SMOOTHING;
   currentPitch += (targetPitch - currentPitch) * GYRO_SMOOTHING;
   currentRoll += (targetRoll - currentRoll) * GYRO_SMOOTHING;
@@ -1363,11 +1301,6 @@ export function getCurrentModelPath() { return currentModelPath; }
 //   入力イベントの登録・初期モデル読み込み・描画ループ開始・初期サイズ合わせをまとめる。
 // -----------------------------------------------------------------------------
 export function initView3d() {
-  // ジャイロ（傾きセンサー）連動を開始する。
-  // （HTTP 環境＋ボタンなしの方針。許可ダイアログを出す端末では自動では動かない場合があるが、
-  //   その制約を受け入れたうえで強制登録する。）
-  window.addEventListener('deviceorientation', onDeviceOrientation);
-
   // タッチ／マウス操作（ドラッグ回転・ピンチ/ホイールズーム）
   canvas.addEventListener('pointerdown', onPointerDown);
   canvas.addEventListener('pointermove', onPointerMove);
