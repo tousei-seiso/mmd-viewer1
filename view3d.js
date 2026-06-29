@@ -387,20 +387,20 @@ function updateCameraPose() {
   computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
   currentDistance += (targetDistance - currentDistance) * ZOOM_SMOOTHING;
 
-  // ① deviceQuat でカメラ前方ベクトルを求め、カメラ位置を Spherical で設定
-  //    カメラは TARGET から「-deviceForward」方向に currentDistance 離れた球面上
-  _cameraBack.set(0, 0, -1).applyQuaternion(_deviceQuat);
-  const phi   = Math.acos(THREE.MathUtils.clamp(-_cameraBack.y, -1, 1));
-  const theta = Math.atan2(-_cameraBack.x, -_cameraBack.z);
+  // ① 位置の決定: モデルを正面から見るための固定的な球座標に修正
+  // スマホを倒してもカメラが地面に潜らないよう、phi（仰角）を固定または制限する
+  // 仰角 phi を 90度 (PI/2) 付近に固定すれば、カメラは常に水平目線になる
+  const phi = Math.PI / 2; // 水平目線固定
+  const theta = -THREE.MathUtils.degToRad(angles.alpha ?? 0); // 方位のみデバイスに追従
+  
   _spherical.set(currentDistance, phi, theta);
   camera.position.setFromSpherical(_spherical).add(TARGET);
 
-  // ② WORLD_UP を維持しながら TARGET を向く（重力軸固定で pitch・yaw を自動解決）
+  // ② 重力軸を維持してモデルを向く
   camera.up.set(0, 1, 0);
   camera.lookAt(TARGET);
 
-  // ③ デバイスのロール（gamma）をカメラのローカル Z 軸まわりに合成
-  //    gamma > 0 = 右側が下がる → camera.rotateZ(-gamma) でシーンが CCW に見える（自然な挙動）
+  // ③ ロールの合成
   camera.rotateZ(-THREE.MathUtils.degToRad(angles.gamma ?? 0));
 }
 
