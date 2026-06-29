@@ -64,16 +64,39 @@ export function updateSway() {
   swayZ = clamp(swayZ * SWAY_DECAY + accZ * SWAY_GAIN, -SWAY_MAX, SWAY_MAX);
 }
 
-// --- DeviceOrientationEvent ―― コンパス方位角(alpha)の取得 -------------------
-//   DeviceMotion とは別イベント。alpha は端末の Z 軸周りの方位角（0〜360°）で、
-//   縦持ちで垂直軸を中心に回転させると変化する（加速度計だけでは検出不可）。
+// --- DeviceOrientationEvent ―― ロール不変な方位角の取得 ----------------------
+//   DeviceMotion とは別イベント。
+//   ❗ event.alpha をそのまま方位角に使うと、画面法線（Z 軸）まわりのロール（ハンドルを
+//     回す動作）でも alpha 値が変化してしまい、カメラが意図せず周回する。
+//   ✅ W3C 回転行列 R = Rz(α)·Rx(β)·Ry(γ) の第 3 列 = 端末 +Z 軸（画面法線）の
+//     ワールド座標を使う。ロールは画面法線を軸とした回転そのものなので、法線方向は
+//     ロールしても変化しない（ロール不変）。水平成分の方位角を yaw として採用する。
+const _DEG = Math.PI / 180;
 let orientationAlpha = null; // ラジアン。未受信時は null
 let orientationActive = false;
 
 function onDeviceOrientation(event) {
-  if (event.alpha === null || event.alpha === undefined) return;
-  orientationAlpha = event.alpha * (Math.PI / 180); // 度 → ラジアン
+  const { alpha, beta, gamma } = event;
+  if (alpha == null || beta == null || gamma == null) return;
   orientationActive = true;
+
+  const cA = Math.cos(alpha * _DEG);
+  const sA = Math.sin(alpha * _DEG);
+  const cB = Math.cos(beta  * _DEG);
+  const sB = Math.sin(beta  * _DEG);
+  const cG = Math.cos(gamma * _DEG);
+  const sG = Math.sin(gamma * _DEG);
+
+  // W3C 回転行列の第3列（画面法線をワールド座標へ変換）
+  //   snX = ENU の東成分, snY = ENU の北成分
+  const snX = cA * sG + sA * sB * cG;
+  const snY = sA * sG - cA * sB * cG;
+
+  // 水平成分が十分あるとき（スマホが概ね垂直）のみ方位角を更新する。
+  // 画面がほぼ真上/真下を向いているときは方位角が不定になるため前回値を保持する。
+  if (Math.hypot(snX, snY) > 0.1) {
+    orientationAlpha = Math.atan2(snX, snY);
+  }
 }
 
 // --- センサー値の参照 -------------------------------------------------------
