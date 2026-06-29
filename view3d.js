@@ -24,9 +24,8 @@ import {
   SWAY_ROT_MAX,
   updateSway,
   getSway,
-  getGrav,
-  getOrientationAlpha,
   isOrientationActive,
+  getOrientationAngles,
   renderSwayDebug,
 } from './sensor.js';
 
@@ -58,21 +57,14 @@ const TARGET = CHARACTER_CENTER;
 // カメラの公転半径（target からの距離）。元の初期位置とほぼ同じ距離感。
 const ORBIT_RADIUS = 30;
 
-// 起動時の基準アングル（ジャイロの中立時に見える構図）。「正面 少し斜め上から見下ろす」。
+// 起動時の基準アングル（リセット時の正面構図を定義する）。「正面 少し斜め上から見下ろす」。
 const BASE_YAW = THREE.MathUtils.degToRad(16);    // 少し斜め（横方向）
 const BASE_PITCH = THREE.MathUtils.degToRad(-15); // 少し上から見下ろす（負＝見下ろし）
 
-// 重力ベクトル → カメラ角度の感度と向き（あべこべなら DIR を -1 に）
-const GYRO_YAW_SENS = 1.0,   GYRO_YAW_DIR = 1;    // 左右傾き → 水平周回（ワールドY軸）
-const GYRO_PITCH_SENS = 1.0, GYRO_PITCH_DIR = -1; // 前後傾き → 見上げ／見下ろし（-1 = 向き反転）
+// クォータニオン slerp の追従の滑らかさ（0〜1。1 に近いほど即時）
+const GYRO_SMOOTHING = 0.2;
 
-const GYRO_SMOOTHING = 0.2; // 角度の追従の滑らかさ（0〜1。1 に近いほど即時）
-
-// ピッチ（見上げ／見下ろし）の可動域。真上・真下を越えて反転しないよう制限。
-const PITCH_MIN = THREE.MathUtils.degToRad(-85);
-const PITCH_MAX = THREE.MathUtils.degToRad(85);
-
-// カメラの up ベクトルに使う定数（lookAt の前に毎回セットする）
+// カメラの up ベクトルに使う定数（frontViewQuat 計算に使用）
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
 // -----------------------------------------------------------------------------
@@ -330,39 +322,61 @@ export async function switchModel(path) {
 }
 
 // -----------------------------------------------------------------------------
-// 重力ベクトル連動 ―― getGrav() を基にしたカメラ Yaw/Pitch の計算
-//   sensor.js の getGrav() から低域通過済みの重力推定値を毎フレーム取得し、
-//   左右傾き（gravX）→ Yaw（水平周回）、前後傾き（gravZ）→ Pitch（仰角）へ変換する。
-//   Roll は重力だけでは求まらないため 0 固定。DeviceOrientation イベントは不要。
+// クォータニオンベースのカメラ制御
+//   DeviceOrientationEvent の alpha/beta/gamma から deviceQuaternion を構成し、
+//   camera.quaternion = _baseQuat * deviceQuat として直接適用する。
+//   Three.js DeviceOrientationControls の実装に準拠（垂直軸まわり回転 = カメラ Yaw）。
 // -----------------------------------------------------------------------------
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-// 角度差を -PI〜PI に正規化（折り返しの飛びを防ぐ）
-function wrapAngle(rad) {
-  return Math.atan2(Math.sin(rad), Math.cos(rad));
+// デバイス座標系 → カメラ座標系補正（X 軸まわり -90°）
+const _Q_CORR_X = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
+
+// フレームごとに使い回す一時オブジェクト（毎フレームの GC を抑制）
+const _euler_dq       = new THREE.Euler();
+const _deviceQuat     = new THREE.Quaternion();
+const _baseQuat       = new THREE.Quaternion();       // リセット時に更新される基準クォータニオン
+const _frontViewQuat  = new THREE.Quaternion();       // BASE_YAW/PITCH で決まる正面構図
+const _cameraBack     = new THREE.Vector3();          // カメラ後方ベクトル（TARGET → camera）
+const _dragEuler      = new THREE.Euler();
+const _dragQuat       = new THREE.Quaternion();
+const _targetCamQuat  = new THREE.Quaternion();
+
+// 正面構図クォータニオンを起動時に 1 回計算する（BASE_YAW / BASE_PITCH から導出）
+{
+  const cosP = Math.cos(BASE_PITCH);
+  const camPos = new THREE.Vector3(
+    TARGET.x + Math.sin(BASE_YAW) * cosP * ORBIT_RADIUS,
+    TARGET.y - Math.sin(BASE_PITCH) * ORBIT_RADIUS,
+    TARGET.z + Math.cos(BASE_YAW) * cosP * ORBIT_RADIUS
+  );
+  const mat = new THREE.Matrix4().lookAt(camPos, TARGET, WORLD_UP);
+  _frontViewQuat.setFromRotationMatrix(mat);
+}
+// 基準クォータニオンと初期カメラ姿勢を正面構図で初期化
+_baseQuat.copy(_frontViewQuat);
+
+// alpha/beta/gamma（度単位）からデバイスクォータニオンを計算し _deviceQuat へ書き込む
+// （Three.js DeviceOrientationControls の変換式準拠）
+function computeDeviceQuat(alpha, beta, gamma) {
+  _euler_dq.set(
+    THREE.MathUtils.degToRad(beta  ?? 0),
+    THREE.MathUtils.degToRad(alpha ?? 0),
+    -THREE.MathUtils.degToRad(gamma ?? 0),
+    'YXZ'
+  );
+  _deviceQuat.setFromEuler(_euler_dq);
+  _deviceQuat.multiply(_Q_CORR_X);
 }
 
-// Yaw は「方位角の累積」で連続化する（atan2 の ±π 折り返しをアンラップ）。
-let prevHeading = null;  // 直前フレームの方位角（ラジアン）
-let yawAccum = 0;        // 起動時を 0 とした累積 Yaw（ラジアン）
-let neutralPitch = null; // Pitch の基準（中立）
-
-// 3 成分の「目標値」と、滑らかに追従させる「現在値」（ラジアン）
-let targetYaw = 0, targetPitch = 0, targetRoll = 0;
-let currentYaw = 0, currentPitch = 0, currentRoll = 0;
-
-// Yaw のソース（DeviceOrientation か重力ベクトルか）の切替検知
-let prevUsingOrientation = false;
-
 // -----------------------------------------------------------------------------
-// タッチ／マウス操作 ―― ドラッグ回転 ＆ ピンチ/ホイールズーム（ジャイロと共存）
-//   ジャイロの回転（currentYaw/Pitch/Roll）とは独立に、ドラッグ由来の「基準角度の
-//   オフセット（dragYaw/dragPitch）」と、ピンチ/ホイール由来の「距離（currentDistance）」を
-//   保持する。これらは描画ループでジャイロ成分に加算・合成される。
-//   ※ ジャイロのクォータニオン計算には一切手を加えない。
+// タッチ／マウス操作 ―― ドラッグ回転 ＆ ピンチ/ホイールズーム
+//   ドラッグ由来のオフセット（dragYaw/dragPitch）は描画ループで _dragQuat として
+//   クォータニオン合成に組み込まれる（device quaternion と競合しない）。
+//   ピンチ/ホイール由来の距離（currentDistance）はカメラ後方ベクトルのスケールに使う。
 // -----------------------------------------------------------------------------
 
 const MIN_DISTANCE = 5;          // 最も寄れる距離
@@ -527,18 +541,17 @@ function computeFitDistance() {
 
 // カメラを正面・全身表示へリセットする
 export function resetView() {
-  // ドラッグで付いた周回・見上げ/見下ろしのオフセットを解除（→ BASE_* の正面構図へ）
+  // ドラッグで付いた周回・見上げ/見下ろしのオフセットを解除
   dragYaw = 0;
   dragPitch = 0;
 
-  // ジャイロの中立基準を取り直す。次のセンサー値で「いまの端末姿勢」を正面とみなすため、
-  // 累積 Yaw と各中立角をリセットし、目標角も 0 に戻す（現在値はループで滑らかに追従）。
-  yawAccum = 0;
-  prevHeading = null;
-  neutralPitch = null;
-  targetYaw = 0;
-  targetPitch = 0;
-  targetRoll = 0;
+  // 現在のデバイス姿勢を「正面構図」に対応付けるよう _baseQuat を更新する。
+  //   _baseQuat = _frontViewQuat * deviceQuat^-1
+  //   → 以降 camera.quaternion = _baseQuat * deviceQuat = _frontViewQuat となる
+  const angles = getOrientationAngles();
+  computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
+  _baseQuat.copy(_deviceQuat).conjugate();    // _baseQuat = deviceQuat^-1
+  _baseQuat.premultiply(_frontViewQuat);      // _baseQuat = _frontViewQuat * deviceQuat^-1
 
   // 全身が収まる距離へズーム（currentDistance はループで滑らかに追従）
   targetDistance = computeFitDistance();
@@ -1123,75 +1136,35 @@ export async function listMotions() {
 // 描画ループ
 // -----------------------------------------------------------------------------
 
-// カメラ位置計算用の一時オブジェクト
-const _offset = new THREE.Vector3();
-
 function animate() {
   requestAnimationFrame(animate);
 
-  // 重力ベクトルから Yaw/Pitch を毎フレーム更新（sensor.js の getGrav() を使用）
-  const grav = getGrav();
-  const gl = Math.hypot(grav.x, grav.y, grav.z);
-  if (gl > 0.5) {
-    const gx = grav.x / gl;
-    const gy = grav.y / gl;
-    const gz = grav.z / gl;
-    // Yaw: DeviceOrientation の alpha が使えるときはそちらを優先する。
-    //   重力ベクトルは垂直軸まわりの回転（コンパス方向）を検出できないため。
-    //   alpha が未取得の間は傾き(heading)で代替する（fallback）。
-    const usingOrientation = isOrientationActive();
-    if (usingOrientation && !prevUsingOrientation) {
-      // ソースが重力 → DeviceOrientation に切り替わった瞬間: 前の heading を破棄して
-      // 現在地点を新しい「基準」にする（切替ジャンプ防止）。
-      prevHeading = null;
-      yawAccum = 0;
-    }
-    prevUsingOrientation = usingOrientation;
+  // ---- クォータニオンベースのカメラ制御 ------------------------------------
+  //   デバイスの alpha/beta/gamma から deviceQuat を構成し、
+  //     camera.quaternion = dragQuat * _baseQuat * deviceQuat
+  //   として直接適用する（Euler 角の計算式は一切使わない）。
+  //   camera.position はカメラ後方ベクトル (+Z) を TARGET から伸ばして決める。
 
-    const alphaVal = getOrientationAlpha();
-    const heading = (usingOrientation && alphaVal !== null)
-      ? alphaVal
-      : Math.atan2(-gx, -gy);
-    if (prevHeading === null) prevHeading = heading;
-    yawAccum += wrapAngle(heading - prevHeading);
-    prevHeading = heading;
-    targetYaw = yawAccum * GYRO_YAW_SENS * GYRO_YAW_DIR;
-    // Pitch: 前後傾き（gz = sin(仰角)）
-    const rawPitch = Math.asin(clamp(gz, -1, 1));
-    if (neutralPitch === null) neutralPitch = rawPitch;
-    targetPitch = (rawPitch - neutralPitch) * GYRO_PITCH_SENS * GYRO_PITCH_DIR;
-    // Roll は重力から求まらないため常に 0
-    targetRoll = 0;
-  }
+  // デバイスクォータニオンを更新（センサー未受信時は前回値を維持）
+  const angles = getOrientationAngles();
+  computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
 
-  // 各成分を目標へ滑らかに追従させる（lerp）
-  currentYaw += (targetYaw - currentYaw) * GYRO_SMOOTHING;
-  currentPitch += (targetPitch - currentPitch) * GYRO_SMOOTHING;
-  currentRoll += (targetRoll - currentRoll) * GYRO_SMOOTHING;
+  // ドラッグオフセットをクォータニオンで表現（Yaw: 世界Y軸、Pitch: その後X軸）
+  _dragEuler.set(dragPitch, dragYaw, 0, 'YXZ');
+  _dragQuat.setFromEuler(_dragEuler);
+
+  // 目標カメラ姿勢 = dragRot * baseRot * deviceRot
+  _targetCamQuat.copy(_dragQuat).multiply(_baseQuat).multiply(_deviceQuat);
+
+  // slerp でスムーズに追従
+  camera.quaternion.slerp(_targetCamQuat, GYRO_SMOOTHING);
 
   // ズーム距離も滑らかに追従させる
   currentDistance += (targetDistance - currentDistance) * ZOOM_SMOOTHING;
 
-  // 最終アングル＝ 起動時構図(BASE_*) ＋ ドラッグ基準オフセット ＋ ジャイロ回転傾き
-  const yaw = BASE_YAW + dragYaw + currentYaw;
-  const pitch = clamp(BASE_PITCH + dragPitch + currentPitch, PITCH_MIN, PITCH_MAX);
-
-  // 球面座標でカメラ位置を決める。
-  //   _qYaw * _qPitch のクォータニオン合成では Pitch 後に camera.up がワールドY軸から
-  //   外れ、シーン（地面・キャラクター）が傾いて見える。
-  //   球面座標 + camera.lookAt() にすることで camera.up = WORLD_UP が常に維持され、
-  //   地面は常に水平、シーンは傾かない。
-  const cosP = Math.cos(pitch);
-  _offset.set(
-    Math.sin(yaw) * cosP,   // X: 水平周回（ワールドY軸まわり）
-    -Math.sin(pitch),        // Y: 仰俯角（正 = カメラが TARGET より下 → 見上げ）
-    Math.cos(yaw) * cosP    // Z: 前後
-  ).multiplyScalar(currentDistance);
-  camera.position.copy(TARGET).add(_offset);
-
-  // ワールドY軸を常にカメラの上方向として維持し、TARGET を向かせる。
-  camera.up.copy(WORLD_UP);
-  camera.lookAt(TARGET);
+  // カメラ位置 = TARGET + カメラ後方ベクトル（ローカル +Z を世界座標へ）* 距離
+  _cameraBack.set(0, 0, 1).applyQuaternion(camera.quaternion);
+  camera.position.copy(TARGET).addScaledVector(_cameraBack, currentDistance);
 
   // --- ダンス（VMD）と音源の強制同期 -------------------------------------------
   //   スマホで FPS が落ちても音と踊りがズレないよう、経過時間ではなく「音源の再生位置」
@@ -1338,6 +1311,9 @@ export function initView3d() {
 
   // 起動時の初期表示
   setNowPlaying('🎵 モーション未選択');
+
+  // 初期カメラ姿勢を正面構図クォータニオンで設定（slerp 開始前のスナップ）
+  camera.quaternion.copy(_frontViewQuat);
 
   // 描画ループ開始
   animate();

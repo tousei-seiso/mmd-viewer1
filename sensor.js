@@ -64,32 +64,28 @@ export function updateSway() {
   swayZ = clamp(swayZ * SWAY_DECAY + accZ * SWAY_GAIN, -SWAY_MAX, SWAY_MAX);
 }
 
-// --- DeviceOrientationEvent ―― ロール不変な方位角の取得 ----------------------
+// --- DeviceOrientationEvent ―― 生の alpha/beta/gamma とロール不変な方位角の取得 ------
 //   DeviceMotion とは別イベント。
-//   ✅ W3C ZXY オイラー角からクォータニオンを構成し、ENU Z 軸（世界上方）まわりの
-//     スウィング・ツイスト分解でツイスト角（真方位）を抽出する。
-//     q = qZ(α)⊗qX(β)⊗qY(γ) の w 成分 fw と z 成分 fz だけで
-//     orientationAlpha = 2·atan2(fz, fw) が求まる。
-//     スクリーン法線（端末 Z）まわりのロールは fw/fz を変化させないため、
-//     カメラが意図せず周回することがない。
+//   raw な alpha/beta/gamma は view3d.js がクォータニオン合成に直接使用する。
+//   orientationAlpha（ツイスト角）は後方互換で残す。
 const _DEG = Math.PI / 180;
 let orientationAlpha = null; // ラジアン。未受信時は null
 let orientationActive = false;
+
+// raw 角度（度単位）。未受信時はすべて 0 。
+let _rawAlpha = 0, _rawBeta = 0, _rawGamma = 0;
 
 function onDeviceOrientation(event) {
   const { alpha, beta, gamma } = event;
   if (alpha == null || beta == null || gamma == null) return;
   orientationActive = true;
 
+  // raw 値を保存（view3d.js がクォータニオン合成に使う）
+  _rawAlpha = alpha;
+  _rawBeta  = beta;
+  _rawGamma = gamma;
+
   // W3C ZXY オイラー角 → クォータニオン → ENU Z 軸スウィング・ツイスト分解
-  //   q = qZ(α) ⊗ qX(β) ⊗ qY(γ)  [Earth(ENU) → Device]
-  //
-  // ツイスト（ENU Z まわりの回転）を抽出：
-  //   q_twist = normalize([fw, 0, 0, fz])
-  //   orientationAlpha = 2·atan2(fz, fw)
-  //
-  // ロール不変：端末 Z（画面法線）まわりの回転は fw・fz を変化させない。
-  // コンパス方向（世界上方まわりの回転）は alpha を変化させ fw・fz を変化させる。
   const ha = alpha * _DEG * 0.5;
   const hb = beta  * _DEG * 0.5;
   const hg = gamma * _DEG * 0.5;
@@ -97,7 +93,6 @@ function onDeviceOrientation(event) {
   const cb = Math.cos(hb), sb = Math.sin(hb);
   const cg = Math.cos(hg), sg = Math.sin(hg);
 
-  // q = qZ(α)⊗qX(β)⊗qY(γ) の w 成分と z 成分のみ計算：
   const fw = ca*cb*cg - sa*sb*sg;
   const fz = ca*sb*sg + sa*cb*cg;
 
@@ -110,6 +105,8 @@ export function getSway() { return { x: swayX, y: swayY, z: swayZ }; }
 export function getGrav() { return { x: gravX, y: gravY, z: gravZ }; }
 export function getOrientationAlpha() { return orientationAlpha; }
 export function isOrientationActive() { return orientationActive; }
+// DeviceOrientationEvent の生角度（度単位）。未受信時は { alpha:0, beta:0, gamma:0 }。
+export function getOrientationAngles() { return { alpha: _rawAlpha, beta: _rawBeta, gamma: _rawGamma }; }
 
 // --- 診断（デバッグ）表示の状態 ---------------------------------------------
 export function isSwayDebug() { return swayDebug; }
