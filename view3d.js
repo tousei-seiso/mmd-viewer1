@@ -377,24 +377,21 @@ function applyModelYaw(targetUserDir) {
 }
 
 // 毎フレーム呼ばれるカメラ姿勢更新
-//   ① デバイスクォータニオン → カメラ軌道位置（球面上の一点）を決める。
-//   ② ツイスト分解でロール成分（ハンドル回転）を除去した rollFreeQuat を求める。
+//   ① ツイスト分解でロール成分（ハンドル回転）を除去した rollFreeQuat を先に求める。
 //      前方軸まわりのツイスト Q_t = normalize( (dot·f, qw) )  ※ dot = q.xyz · forward
 //      スウィング Q_s = Q × Q_t⁻¹  →  ロール除去済みの姿勢クォータニオン。
-//   ③ camera.quaternion に rollFreeQuat を直接代入する（lookAt は使わない）。
-//      スマホを傾けると「見上げ・横向き」がそのまま追従し、
-//      ロール回転（スマホをひねる）だけは除去されて camera.up が常に WORLD_UP を向く。
+//   ② rollFreeQuat の前方ベクトルでカメラ位置を算出する（位置と姿勢を一致させる）。
+//      cameraPosition = TARGET − forwardVec × currentDistance
+//      ※ deviceQuat（ロール込み）で位置を決めると姿勢と食い違いが生じモデルが視野外に出る。
+//   ③ lookAt で TARGET を確実に捉えてから rollFreeQuat を camera.quaternion に上書きする。
+//      lookAt が「位置関係に基づく見上げ・俯瞰」を確定し、quaternion 上書きでロールを除去する。
 function updateCameraPose() {
   const angles = getOrientationAngles();
   computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
-
-  // カメラ軌道位置: TARGET + 後方ベクトル × 距離
-  _cameraBack.set(0, 0, 1).applyQuaternion(_deviceQuat);
   currentDistance += (targetDistance - currentDistance) * ZOOM_SMOOTHING;
-  camera.position.copy(TARGET).addScaledVector(_cameraBack, currentDistance);
 
-  // ロール成分をツイスト分解で除去した rollFreeQuat を計算する
-  _fwdVec.copy(_cameraBack).negate(); // カメラ前方ベクトル（world空間）= -_cameraBack
+  // ① ツイスト分解: deviceQuat の前方軸まわりのロール成分を除去した rollFreeQuat を求める
+  _fwdVec.set(0, 0, -1).applyQuaternion(_deviceQuat); // deviceQuat の前方軸（world空間）
   const dot = _deviceQuat.x * _fwdVec.x
             + _deviceQuat.y * _fwdVec.y
             + _deviceQuat.z * _fwdVec.z;
@@ -406,8 +403,15 @@ function updateCameraPose() {
   }
   _rollFreeQuat.copy(_deviceQuat).multiply(_twistQuat.conjugate());
 
-  // lookAt の代わりにクォータニオンを直接適用
+  // ② rollFreeQuat の前方ベクトルでカメラ位置を算出する
+  //    forwardVec = (0,0,-1).applyQuat(rollFreeQuat)
+  //    cameraPosition = TARGET − forwardVec × currentDistance
+  _fwdVec.set(0, 0, -1).applyQuaternion(_rollFreeQuat);
+  camera.position.copy(TARGET).addScaledVector(_fwdVec, -currentDistance);
+
+  // ③ lookAt で TARGET を捉えた後、rollFreeQuat で上書きしてロールを除去する
   camera.up.copy(WORLD_UP);
+  camera.lookAt(TARGET);
   camera.quaternion.copy(_rollFreeQuat);
 }
 
