@@ -338,9 +338,12 @@ function clamp(value, min, max) {
 const _Q_CORR_X = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
 
 // フレームごとに使い回す一時オブジェクト
-const _euler_dq   = new THREE.Euler();
-const _deviceQuat = new THREE.Quaternion();
-const _cameraBack = new THREE.Vector3(); // deviceQuat 由来の軌道方向ベクトル
+const _euler_dq     = new THREE.Euler();
+const _deviceQuat   = new THREE.Quaternion();
+const _cameraBack   = new THREE.Vector3(); // deviceQuat 由来の軌道方向ベクトル
+const _fwdVec       = new THREE.Vector3(); // カメラ前方ベクトル（ロール除去計算用）
+const _twistQuat    = new THREE.Quaternion(); // ツイスト（ロール）成分
+const _rollFreeQuat = new THREE.Quaternion(); // ロール除去済みクォータニオン
 
 // alpha/beta/gamma（度単位）→ _deviceQuat（Three.js DeviceOrientationControls 準拠）
 function computeDeviceQuat(alpha, beta, gamma) {
@@ -374,19 +377,38 @@ function applyModelYaw(targetUserDir) {
 }
 
 // 毎フレーム呼ばれるカメラ姿勢更新
-//   軌道位置 = TARGET + (0,0,1).applyQuat(deviceQuat) * currentDistance
-//   camera.up = WORLD_UP を設定してから camera.lookAt(TARGET) を呼ぶことで、
-//   スマホのロール（ハンドル回転）はカメラ位置の軌道変化として現れるが、
-//   カメラ自身の姿勢ロールは除去され、モデルは常に直立を維持する。
-//   ※ camera.quaternion を直接代入すると camera.up が無視されるため lookAt を使う。
+//   ① デバイスクォータニオン → カメラ軌道位置（球面上の一点）を決める。
+//   ② ツイスト分解でロール成分（ハンドル回転）を除去した rollFreeQuat を求める。
+//      前方軸まわりのツイスト Q_t = normalize( (dot·f, qw) )  ※ dot = q.xyz · forward
+//      スウィング Q_s = Q × Q_t⁻¹  →  ロール除去済みの姿勢クォータニオン。
+//   ③ camera.quaternion に rollFreeQuat を直接代入する（lookAt は使わない）。
+//      スマホを傾けると「見上げ・横向き」がそのまま追従し、
+//      ロール回転（スマホをひねる）だけは除去されて camera.up が常に WORLD_UP を向く。
 function updateCameraPose() {
   const angles = getOrientationAngles();
   computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
+
+  // カメラ軌道位置: TARGET + 後方ベクトル × 距離
   _cameraBack.set(0, 0, 1).applyQuaternion(_deviceQuat);
   currentDistance += (targetDistance - currentDistance) * ZOOM_SMOOTHING;
   camera.position.copy(TARGET).addScaledVector(_cameraBack, currentDistance);
+
+  // ロール成分をツイスト分解で除去した rollFreeQuat を計算する
+  _fwdVec.copy(_cameraBack).negate(); // カメラ前方ベクトル（world空間）= -_cameraBack
+  const dot = _deviceQuat.x * _fwdVec.x
+            + _deviceQuat.y * _fwdVec.y
+            + _deviceQuat.z * _fwdVec.z;
+  _twistQuat.set(dot * _fwdVec.x, dot * _fwdVec.y, dot * _fwdVec.z, _deviceQuat.w);
+  if (_twistQuat.length() > 1e-6) {
+    _twistQuat.normalize();
+  } else {
+    _twistQuat.identity(); // ロール 180° 付近の特異点: ロールなしとして扱う
+  }
+  _rollFreeQuat.copy(_deviceQuat).multiply(_twistQuat.conjugate());
+
+  // lookAt の代わりにクォータニオンを直接適用
   camera.up.copy(WORLD_UP);
-  camera.lookAt(TARGET);
+  camera.quaternion.copy(_rollFreeQuat);
 }
 
 // -----------------------------------------------------------------------------
