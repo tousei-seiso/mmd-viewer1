@@ -376,43 +376,32 @@ function applyModelYaw(targetUserDir) {
   currentModel.rotateOnWorldAxis(WORLD_UP, diff);
 }
 
-// 毎フレーム呼ばれるカメラ姿勢更新（WORLD基準）
-//   ① deviceQuat の前方ベクトルを水平面（XZ）に射影して水平向きだけ抽出する。
-//   ② その水平向きから「純粋なヨー」クォータニオンを再構築する（ロール・ピッチ不変）。
-//   ③ デバイスのフル3D方向を Spherical 座標に変換してカメラ位置を設定する。
-//   これにより、スマホをどう倒しても常に WORLD_UP 基準の正立姿勢が維持される。
+// 毎フレーム呼ばれるカメラ姿勢更新
+//   ① deviceQuat の前方ベクトルから Spherical 座標を計算してカメラ位置を設定する。
+//   ② camera.up = WORLD_UP 固定 + lookAt で重力軸を維持した姿勢を確立する。
+//   ③ デバイスのロール（gamma）だけを rotateZ でローカル Z 軸まわりに合成する。
+//   こうすることで「仰角・方位角 → 位置」「pitch・yaw → lookAt」「roll → rotateZ」と
+//   責務が分離され、スマホをどう向けても座標系が崩壊しない。
 function updateCameraPose() {
   const angles = getOrientationAngles();
   computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
   currentDistance += (targetDistance - currentDistance) * ZOOM_SMOOTHING;
 
-  // ① デバイスの向きをワールド空間のカメラ前方ベクトルに変換
+  // ① deviceQuat でカメラ前方ベクトルを求め、カメラ位置を Spherical で設定
+  //    カメラは TARGET から「-deviceForward」方向に currentDistance 離れた球面上
   _cameraBack.set(0, 0, -1).applyQuaternion(_deviceQuat);
-
-  // Spherical 計算用にフル3D方向を退避
-  const dirX = _cameraBack.x;
-  const dirY = _cameraBack.y;
-  const dirZ = _cameraBack.z;
-
-  // ② y 成分をゼロにして水平面に射影・正規化（ピッチ・ロールを捨てて水平向きだけ抽出）
-  _cameraBack.y = 0;
-  if (_cameraBack.lengthSq() < 1e-10) return; // 真上/真下向き: 特異点のため姿勢は据え置き
-  _cameraBack.normalize();
-
-  // ③ (0,0,-1) → 水平射影後の向きへの純粋なヨー回転として _rollFreeQuat を再構築
-  _fwdVec.set(0, 0, -1);
-  _rollFreeQuat.setFromUnitVectors(_fwdVec, _cameraBack);
-
-  // ④ デバイスの傾きから phi・theta を算出し、Spherical でカメラ位置を設定
-  //    カメラは TARGET から「-deviceForward」方向に currentDistance 離れた位置
-  const phi   = Math.acos(THREE.MathUtils.clamp(-dirY, -1, 1));
-  const theta = Math.atan2(-dirX, -dirZ);
+  const phi   = Math.acos(THREE.MathUtils.clamp(-_cameraBack.y, -1, 1));
+  const theta = Math.atan2(-_cameraBack.x, -_cameraBack.z);
   _spherical.set(currentDistance, phi, theta);
   camera.position.setFromSpherical(_spherical).add(TARGET);
 
-  // ⑤ 姿勢と上方向を設定
+  // ② WORLD_UP を維持しながら TARGET を向く（重力軸固定で pitch・yaw を自動解決）
   camera.up.set(0, 1, 0);
-  camera.quaternion.copy(_rollFreeQuat);
+  camera.lookAt(TARGET);
+
+  // ③ デバイスのロール（gamma）をカメラのローカル Z 軸まわりに合成
+  //    gamma > 0 = 右側が下がる → camera.rotateZ(-gamma) でシーンが CCW に見える（自然な挙動）
+  camera.rotateZ(-THREE.MathUtils.degToRad(angles.gamma ?? 0));
 }
 
 // -----------------------------------------------------------------------------
