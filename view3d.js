@@ -61,8 +61,8 @@ const BASE_YAW = THREE.MathUtils.degToRad(16);    // 少し斜め（横方向）
 const BASE_PITCH = THREE.MathUtils.degToRad(-15); // 少し上から見下ろす（負＝見下ろし）
 
 // 重力ベクトル → カメラ角度の感度と向き（あべこべなら DIR を -1 に）
-const GYRO_YAW_SENS = 1.0,   GYRO_YAW_DIR = 1;   // 左右傾き → 水平周回（ワールドY軸）
-const GYRO_PITCH_SENS = 1.0, GYRO_PITCH_DIR = 1; // 前後傾き → 見上げ／見下ろし（ローカルX軸）
+const GYRO_YAW_SENS = 1.0,   GYRO_YAW_DIR = 1;    // 左右傾き → 水平周回（ワールドY軸）
+const GYRO_PITCH_SENS = 1.0, GYRO_PITCH_DIR = -1; // 前後傾き → 見上げ／見下ろし（-1 = 向き反転）
 
 const GYRO_SMOOTHING = 0.2; // 角度の追従の滑らかさ（0〜1。1 に近いほど即時）
 
@@ -70,10 +70,8 @@ const GYRO_SMOOTHING = 0.2; // 角度の追従の滑らかさ（0〜1。1 に近
 const PITCH_MIN = THREE.MathUtils.degToRad(-85);
 const PITCH_MAX = THREE.MathUtils.degToRad(85);
 
-// 固定のワールド軸（回転軸として使う）
-const WORLD_X = new THREE.Vector3(1, 0, 0);
-const WORLD_Y = new THREE.Vector3(0, 1, 0);
-const WORLD_Z = new THREE.Vector3(0, 0, 1);
+// カメラの up ベクトルに使う定数（lookAt の前に毎回セットする）
+const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
 // -----------------------------------------------------------------------------
 // 基本オブジェクト（シーン・カメラ・レンダラー）
@@ -1120,11 +1118,7 @@ export async function listMotions() {
 // 描画ループ
 // -----------------------------------------------------------------------------
 
-// カメラ姿勢合成用の一時オブジェクト
-const _qYaw = new THREE.Quaternion();
-const _qPitch = new THREE.Quaternion();
-const _qRoll = new THREE.Quaternion();
-const _camQuat = new THREE.Quaternion();
+// カメラ位置計算用の一時オブジェクト
 const _offset = new THREE.Vector3();
 
 function animate() {
@@ -1160,32 +1154,25 @@ function animate() {
   currentDistance += (targetDistance - currentDistance) * ZOOM_SMOOTHING;
 
   // 最終アングル＝ 起動時構図(BASE_*) ＋ ドラッグ基準オフセット ＋ ジャイロ回転傾き
-  //   Yaw/Pitch にはドラッグ分を加算（共存）、Roll はジャイロのみ。
   const yaw = BASE_YAW + dragYaw + currentYaw;
   const pitch = clamp(BASE_PITCH + dragPitch + currentPitch, PITCH_MIN, PITCH_MAX);
-  const roll = currentRoll;
 
-  // 3 つの回転を「完全に独立」に作る。
-  //   Qyaw : ワールド Y 軸まわり（スマホがどう傾こうが常に世界の真上が軸）
-  //   Qpitch: ワールド X 軸まわり（合成順により実質ローカルX＝カメラの右向き軸になる）
-  //   Qroll : ワールド Z 軸まわり（合成順により実質ローカルZ＝視線軸になる）
-  _qYaw.setFromAxisAngle(WORLD_Y, yaw);
-  _qPitch.setFromAxisAngle(WORLD_X, pitch);
-  _qRoll.setFromAxisAngle(WORLD_Z, roll);
-
-  // 合成順 Yaw × Pitch × Roll（内在回転）。
-  //   この順序により Pitch はローカルX（右）軸、Roll はローカルZ（視線）軸まわりとなり、
-  //   Yaw だけが純粋にワールドY軸まわりになる＝Roll は周回（Yaw）に 1 ピクセルも混ざらない。
-  _camQuat.copy(_qYaw).multiply(_qPitch).multiply(_qRoll);
-
-  // 姿勢からカメラ位置を決める：target を中心に、ズーム距離 currentDistance で公転。
-  //   カメラのローカル +Z（視線の逆向き）方向へ距離分だけ離す → 常に target を見る。
-  //   ＝「向きを決めてから、ピンチ距離だけ後ろに配置する」構成。
-  _offset.set(0, 0, 1).applyQuaternion(_camQuat).multiplyScalar(currentDistance);
+  // 球面座標でカメラ位置を決める。
+  //   _qYaw * _qPitch のクォータニオン合成では Pitch 後に camera.up がワールドY軸から
+  //   外れ、シーン（地面・キャラクター）が傾いて見える。
+  //   球面座標 + camera.lookAt() にすることで camera.up = WORLD_UP が常に維持され、
+  //   地面は常に水平、シーンは傾かない。
+  const cosP = Math.cos(pitch);
+  _offset.set(
+    Math.sin(yaw) * cosP,   // X: 水平周回（ワールドY軸まわり）
+    -Math.sin(pitch),        // Y: 仰俯角（正 = カメラが TARGET より下 → 見上げ）
+    Math.cos(yaw) * cosP    // Z: 前後
+  ).multiplyScalar(currentDistance);
   camera.position.copy(TARGET).add(_offset);
 
-  // 姿勢を直接適用（lookAt は使わない＝Roll の傾きが打ち消されないようにするため）
-  camera.quaternion.copy(_camQuat);
+  // ワールドY軸を常にカメラの上方向として維持し、TARGET を向かせる。
+  camera.up.copy(WORLD_UP);
+  camera.lookAt(TARGET);
 
   // --- ダンス（VMD）と音源の強制同期 -------------------------------------------
   //   スマホで FPS が落ちても音と踊りがズレないよう、経過時間ではなく「音源の再生位置」
