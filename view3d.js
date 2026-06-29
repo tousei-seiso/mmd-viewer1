@@ -546,18 +546,46 @@ function computeFitDistance() {
   return clamp(dist, MIN_DISTANCE, MAX_DISTANCE);
 }
 
-// カメラをリセットする（ドラッグ解除 ＋ ズーム最適化のみ）
-//   スマホの物理的な向きがそのまま軌道方向に対応するため、
-//   リセットは「位置の強制」ではなく「距離調整 ＋ ドラッグ解除」のみ行う。
-//     スマホ水平（床置き・画面上向き）→ 真上からの俯瞰視点
-//     スマホ直立（正面向き）         → モデル正面からの視点
+// カメラをリセットする（Yaw のみキャリブレーション ＋ ズーム最適化）
+//
+//   スマホの「傾き」（beta/gamma → 垂直方向）はそのままカメラ視点に対応させる：
+//     スマホ水平（床置き・画面上向き）→ 俯瞰視点
+//     スマホ直立（正面向き）         → 水平視点
+//
+//   スマホの「水平方向」（alpha = コンパス）だけをキャリブレーションする：
+//     リセット時点でのコンパス方向を「モデル正面（+Z）」に対応付ける Y 軸回転を
+//     _baseQuat に保存する。
+//     これにより、ユーザーがどの方角を向いていても「スマホを自分に向けると
+//     モデルがこちらを向く」という動作が成立する。
+//
 //   camera.up = WORLD_UP を animate() が毎フレーム維持するため、
 //   ハンドル回転（ロール）はカメラ位置の軌道変化に変換され、モデルは常に上向きを保つ。
 export function resetView() {
   dragYaw = 0;
   dragPitch = 0;
-  // _baseQuat を identity に戻す: スマホの向き = カメラの軌道方向（キャリブレーション解除）
-  _baseQuat.identity();
+
+  // 現在のデバイスクォータニオンを取得
+  const angles = getOrientationAngles();
+  computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
+
+  // 現在の軌道方向ベクトル = (0,0,1).applyQuat(deviceQuat)
+  _cameraBack.set(0, 0, 1).applyQuaternion(_deviceQuat);
+
+  // Yaw キャリブレーション:
+  //   水平成分（X-Z 平面内の角度）だけを抽出し、それを打ち消す Y 軸回転を _baseQuat に設定。
+  //   垂直成分（Y）は一切変えないため、スマホの傾き（俯瞰 ↔ 水平）はそのまま保たれる。
+  //   atan2(x, z) = +Z 軸から現在の水平方向までの角度（Y 軸まわり）
+  const horizX = _cameraBack.x;
+  const horizZ = _cameraBack.z;
+  const horizLen = Math.sqrt(horizX * horizX + horizZ * horizZ);
+  if (horizLen > 0.01) {
+    // Y 軸まわりに -angle だけ回転させて水平成分を +Z へ揃える
+    _baseQuat.setFromAxisAngle(WORLD_UP, -Math.atan2(horizX, horizZ));
+  } else {
+    // ほぼ真上/真下を向いているとき（俯瞰・仰角）は水平キャリブレーション不要
+    _baseQuat.identity();
+  }
+
   const fitDist = computeFitDistance();
   targetDistance = fitDist;
   currentDistance = fitDist;
