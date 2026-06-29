@@ -340,10 +340,10 @@ const _Q_CORR_X = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
 // フレームごとに使い回す一時オブジェクト
 const _euler_dq     = new THREE.Euler();
 const _deviceQuat   = new THREE.Quaternion();
-const _cameraBack   = new THREE.Vector3(); // deviceQuat 由来の軌道方向ベクトル
-const _fwdVec       = new THREE.Vector3(); // カメラ前方ベクトル（ロール除去計算用）
-const _twistQuat    = new THREE.Quaternion(); // ツイスト（ロール）成分
+const _cameraBack   = new THREE.Vector3(); // deviceQuat 由来のカメラ前方ベクトル（一時）
+const _fwdVec       = new THREE.Vector3(); // 水平射影・setFromUnitVectors 計算用の一時ベクトル
 const _rollFreeQuat = new THREE.Quaternion(); // ロール除去済みクォータニオン
+const _spherical    = new THREE.Spherical();  // カメラ位置計算用
 
 // alpha/beta/gamma（度単位）→ _deviceQuat（Three.js DeviceOrientationControls 準拠）
 function computeDeviceQuat(alpha, beta, gamma) {
@@ -376,42 +376,42 @@ function applyModelYaw(targetUserDir) {
   currentModel.rotateOnWorldAxis(WORLD_UP, diff);
 }
 
-// 毎フレーム呼ばれるカメラ姿勢更新
-//   ① ツイスト分解でロール成分（ハンドル回転）を除去した rollFreeQuat を先に求める。
-//      前方軸まわりのツイスト Q_t = normalize( (dot·f, qw) )  ※ dot = q.xyz · forward
-//      スウィング Q_s = Q × Q_t⁻¹  →  ロール除去済みの姿勢クォータニオン。
-//   ② rollFreeQuat の前方ベクトルでカメラ位置を算出する（位置と姿勢を一致させる）。
-//      cameraPosition = TARGET − forwardVec × currentDistance
-//      ※ deviceQuat（ロール込み）で位置を決めると姿勢と食い違いが生じモデルが視野外に出る。
-//   ③ lookAt で TARGET を確実に捉えてから rollFreeQuat を camera.quaternion に上書きする。
-//      lookAt が「位置関係に基づく見上げ・俯瞰」を確定し、quaternion 上書きでロールを除去する。
+// 毎フレーム呼ばれるカメラ姿勢更新（WORLD基準）
+//   ① deviceQuat の前方ベクトルを水平面（XZ）に射影して水平向きだけ抽出する。
+//   ② その水平向きから「純粋なヨー」クォータニオンを再構築する（ロール・ピッチ不変）。
+//   ③ デバイスのフル3D方向を Spherical 座標に変換してカメラ位置を設定する。
+//   これにより、スマホをどう倒しても常に WORLD_UP 基準の正立姿勢が維持される。
 function updateCameraPose() {
   const angles = getOrientationAngles();
   computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
   currentDistance += (targetDistance - currentDistance) * ZOOM_SMOOTHING;
 
-  // ① ツイスト分解: deviceQuat の前方軸まわりのロール成分を除去した rollFreeQuat を求める
-  _fwdVec.set(0, 0, -1).applyQuaternion(_deviceQuat); // deviceQuat の前方軸（world空間）
-  const dot = _deviceQuat.x * _fwdVec.x
-            + _deviceQuat.y * _fwdVec.y
-            + _deviceQuat.z * _fwdVec.z;
-  _twistQuat.set(dot * _fwdVec.x, dot * _fwdVec.y, dot * _fwdVec.z, _deviceQuat.w);
-  if (_twistQuat.length() > 1e-6) {
-    _twistQuat.normalize();
-  } else {
-    _twistQuat.identity(); // ロール 180° 付近の特異点: ロールなしとして扱う
-  }
-  _rollFreeQuat.copy(_deviceQuat).multiply(_twistQuat.conjugate());
+  // ① デバイスの向きをワールド空間のカメラ前方ベクトルに変換
+  _cameraBack.set(0, 0, -1).applyQuaternion(_deviceQuat);
 
-  // ② rollFreeQuat の前方ベクトルでカメラ位置を算出する
-  //    forwardVec = (0,0,-1).applyQuat(rollFreeQuat)
-  //    cameraPosition = TARGET − forwardVec × currentDistance
-  _fwdVec.set(0, 0, -1).applyQuaternion(_rollFreeQuat);
-  camera.position.copy(TARGET).addScaledVector(_fwdVec, -currentDistance);
+  // Spherical 計算用にフル3D方向を退避
+  const dirX = _cameraBack.x;
+  const dirY = _cameraBack.y;
+  const dirZ = _cameraBack.z;
 
-  // ③ lookAt で TARGET を捉えた後、rollFreeQuat で上書きしてロールを除去する
-  camera.up.copy(WORLD_UP);
-  camera.lookAt(TARGET);
+  // ② y 成分をゼロにして水平面に射影・正規化（ピッチ・ロールを捨てて水平向きだけ抽出）
+  _cameraBack.y = 0;
+  if (_cameraBack.lengthSq() < 1e-10) return; // 真上/真下向き: 特異点のため姿勢は据え置き
+  _cameraBack.normalize();
+
+  // ③ (0,0,-1) → 水平射影後の向きへの純粋なヨー回転として _rollFreeQuat を再構築
+  _fwdVec.set(0, 0, -1);
+  _rollFreeQuat.setFromUnitVectors(_fwdVec, _cameraBack);
+
+  // ④ デバイスの傾きから phi・theta を算出し、Spherical でカメラ位置を設定
+  //    カメラは TARGET から「-deviceForward」方向に currentDistance 離れた位置
+  const phi   = Math.acos(THREE.MathUtils.clamp(-dirY, -1, 1));
+  const theta = Math.atan2(-dirX, -dirZ);
+  _spherical.set(currentDistance, phi, theta);
+  camera.position.setFromSpherical(_spherical).add(TARGET);
+
+  // ⑤ 姿勢と上方向を設定
+  camera.up.set(0, 1, 0);
   camera.quaternion.copy(_rollFreeQuat);
 }
 
