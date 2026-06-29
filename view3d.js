@@ -25,6 +25,8 @@ import {
   updateSway,
   getSway,
   getGrav,
+  getOrientationAlpha,
+  isOrientationActive,
   renderSwayDebug,
 } from './sensor.js';
 
@@ -351,6 +353,9 @@ let neutralPitch = null; // Pitch の基準（中立）
 // 3 成分の「目標値」と、滑らかに追従させる「現在値」（ラジアン）
 let targetYaw = 0, targetPitch = 0, targetRoll = 0;
 let currentYaw = 0, currentPitch = 0, currentRoll = 0;
+
+// Yaw のソース（DeviceOrientation か重力ベクトルか）の切替検知
+let prevUsingOrientation = false;
 
 // -----------------------------------------------------------------------------
 // タッチ／マウス操作 ―― ドラッグ回転 ＆ ピンチ/ホイールズーム（ジャイロと共存）
@@ -1131,8 +1136,22 @@ function animate() {
     const gx = grav.x / gl;
     const gy = grav.y / gl;
     const gz = grav.z / gl;
-    // Yaw: 左右傾き（縦持ち正面で 0、傾けると累積）
-    const heading = Math.atan2(-gx, -gy);
+    // Yaw: DeviceOrientation の alpha が使えるときはそちらを優先する。
+    //   重力ベクトルは垂直軸まわりの回転（コンパス方向）を検出できないため。
+    //   alpha が未取得の間は傾き(heading)で代替する（fallback）。
+    const usingOrientation = isOrientationActive();
+    if (usingOrientation && !prevUsingOrientation) {
+      // ソースが重力 → DeviceOrientation に切り替わった瞬間: 前の heading を破棄して
+      // 現在地点を新しい「基準」にする（切替ジャンプ防止）。
+      prevHeading = null;
+      yawAccum = 0;
+    }
+    prevUsingOrientation = usingOrientation;
+
+    const alphaVal = getOrientationAlpha();
+    const heading = (usingOrientation && alphaVal !== null)
+      ? alphaVal
+      : Math.atan2(-gx, -gy);
     if (prevHeading === null) prevHeading = heading;
     yawAccum += wrapAngle(heading - prevHeading);
     prevHeading = heading;

@@ -64,10 +64,24 @@ export function updateSway() {
   swayZ = clamp(swayZ * SWAY_DECAY + accZ * SWAY_GAIN, -SWAY_MAX, SWAY_MAX);
 }
 
+// --- DeviceOrientationEvent ―― コンパス方位角(alpha)の取得 -------------------
+//   DeviceMotion とは別イベント。alpha は端末の Z 軸周りの方位角（0〜360°）で、
+//   縦持ちで垂直軸を中心に回転させると変化する（加速度計だけでは検出不可）。
+let orientationAlpha = null; // ラジアン。未受信時は null
+let orientationActive = false;
+
+function onDeviceOrientation(event) {
+  if (event.alpha === null || event.alpha === undefined) return;
+  orientationAlpha = event.alpha * (Math.PI / 180); // 度 → ラジアン
+  orientationActive = true;
+}
+
 // --- センサー値の参照 -------------------------------------------------------
 export function getAcc() { return { x: accX, y: accY, z: accZ }; }
 export function getSway() { return { x: swayX, y: swayY, z: swayZ }; }
 export function getGrav() { return { x: gravX, y: gravY, z: gravZ }; }
+export function getOrientationAlpha() { return orientationAlpha; }
+export function isOrientationActive() { return orientationActive; }
 
 // --- 診断（デバッグ）表示の状態 ---------------------------------------------
 export function isSwayDebug() { return swayDebug; }
@@ -81,11 +95,36 @@ export function renderSwayDebug(boneCount) {
     `sway ${swayX.toFixed(2)} ${swayZ.toFixed(2)} | bones ${boneCount}`;
 }
 
-// --- 初期化：加速度センサーの購読＋診断トグルの配線 -------------------------
+// --- 初期化：加速度センサーの購読＋DeviceOrientation 購読＋診断トグルの配線 --
 //   起動と同時に、無条件で加速度センサーの購読を開始する。
-//   右上アイコン（#debug-toggle）のタップで診断表示を ON/OFF する。
+//   DeviceOrientationEvent は iOS 13+ でパーミッションが必要なため、最初の
+//   ユーザー操作（touchstart / pointerdown）を検知してから requestPermission() を呼ぶ。
+//   Android・非 iOS ブラウザはそのまま購読を開始する。
 export function initSensors() {
   window.addEventListener('devicemotion', onDeviceMotion);
+
+  // DeviceOrientation（コンパス方位角 alpha）の購読
+  function startOrientationListener() {
+    window.addEventListener('deviceorientation', onDeviceOrientation);
+  }
+
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    // iOS 13+: ユーザー操作を契機に permission を要求する（二重呼び出し防止フラグ付き）
+    let permissionAsked = false;
+    const askPermission = () => {
+      if (permissionAsked) return;
+      permissionAsked = true;
+      DeviceOrientationEvent.requestPermission()
+        .then(state => { if (state === 'granted') startOrientationListener(); })
+        .catch(() => {});
+    };
+    // touchstart と pointerdown の両方を登録しておく（どちらが先に来ても OK）
+    document.addEventListener('touchstart', askPermission, { once: true, passive: true });
+    document.addEventListener('pointerdown', askPermission, { once: true });
+  } else {
+    startOrientationListener();
+  }
 
   const debugToggleBtn = document.getElementById('debug-toggle');
   if (debugToggleBtn) {
