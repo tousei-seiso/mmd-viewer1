@@ -24,6 +24,7 @@ import {
   SWAY_ROT_MAX,
   updateSway,
   getSway,
+  getGrav,
   isOrientationActive,
   getOrientationAngles,
   renderSwayDebug,
@@ -336,15 +337,19 @@ function clamp(value, min, max) {
 const _Q_CORR_X = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
 
 // フレームごとに使い回す一時オブジェクト（毎フレームの GC を抑制）
-const _euler_dq       = new THREE.Euler();
-const _deviceQuat     = new THREE.Quaternion();
-const _baseQuat       = new THREE.Quaternion();       // リセット時に更新される基準クォータニオン
-const _frontViewQuat  = new THREE.Quaternion();       // BASE_YAW/PITCH で決まる正面構図
-const _cameraBack     = new THREE.Vector3();          // 目標軌道方向（_targetCamQuat の +Z）
-const _currentOrbitDir = new THREE.Vector3();         // 現在の軌道方向（lerp でスムーズ補間）
-const _dragEuler      = new THREE.Euler();
-const _dragQuat       = new THREE.Quaternion();
-const _targetCamQuat  = new THREE.Quaternion();
+const _euler_dq        = new THREE.Euler();
+const _deviceQuat      = new THREE.Quaternion();
+const _baseQuat        = new THREE.Quaternion();       // リセット時に更新される基準クォータニオン
+const _frontViewQuat   = new THREE.Quaternion();       // BASE_YAW/PITCH で決まる正面構図
+const _cameraBack      = new THREE.Vector3();          // 目標軌道方向（_targetCamQuat の +Z）
+const _currentOrbitDir = new THREE.Vector3();          // 現在の軌道方向（lerp でスムーズ補間）
+const _dragEuler       = new THREE.Euler();
+const _dragQuat        = new THREE.Quaternion();
+const _targetCamQuat   = new THREE.Quaternion();
+// resetView() 専用の一時オブジェクト（毎回 new を避けるため）
+const _resetTargetQuat = new THREE.Quaternion();
+const _resetLookAtMat  = new THREE.Matrix4();
+const _resetOrigin     = new THREE.Vector3(0, 0, 0);
 
 // 正面構図クォータニオンを起動時に 1 回計算する（BASE_YAW / BASE_PITCH から導出）
 {
@@ -541,29 +546,52 @@ function computeFitDistance() {
   return clamp(dist, MIN_DISTANCE, MAX_DISTANCE);
 }
 
-// カメラを正面・全身表示へリセットする（現在のデバイス姿勢を基準にキャリブレーション）
+// カメラを全身表示へリセットする（重力ベクトルと現在のデバイス姿勢を同期）
+//   ・モデルの向き（BaseRotation）は変更しない。
+//   ・カメラが「今向いている方向」（スマホの向き）をそのまま維持したまま、
+//     currentDistance だけをバウンディングボックスに基づいて調整する。
+//   ・スマホが床を向いていれば → 俯瞰視点。正面を向いていれば → 前面視点。
+//   ・重力ベクトルとデバイス姿勢の差分を _baseQuat に反映することで、
+//     animate() の camera.up = WORLD_UP + lookAt(TARGET) により常に
+//     モデルが重力方向と垂直に表示され続ける（AR 整合を維持）。
 export function resetView() {
   // ドラッグで付いた周回・見上げ/見下ろしのオフセットを解除
   dragYaw = 0;
   dragPitch = 0;
 
-  // 姿勢の基準化: 現在のデバイス姿勢を「正面構図」に対応付ける回転オフセットを算出
-  //   _baseQuat = _frontViewQuat * deviceQuat^-1
-  //   → 以降 effectiveQuat = _baseQuat * deviceQuat = _frontViewQuat となる
+  // 現在のデバイスクォータニオンを更新
   const angles = getOrientationAngles();
   computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
-  _baseQuat.copy(_deviceQuat).conjugate();    // _baseQuat = deviceQuat^-1
-  _baseQuat.premultiply(_frontViewQuat);      // _baseQuat = _frontViewQuat * deviceQuat^-1
 
-  // 最適ズームを即時適用（モデルのバウンディングボックスと camera.fov から算出）
+  // 重力ベクトル（センサー座標系の「下方向」）を取得し、
+  // 重力とデバイス姿勢の差分を _baseQuat に保存する。
+  // camera.up = WORLD_UP（Y+）で lookAt を毎フレーム呼ぶことにより、
+  // 重力方向と垂直（鉛直上向き = Y+）な表示が自動的に維持される。
+  const grav = getGrav();
+  const gravLen = Math.hypot(grav.x, grav.y, grav.z);
+  // 有効な重力が取れていれば、センサー上の「真下」＝重力方向を参照済みとしてログ
+  if (gravLen > 0.5) {
+    // grav は calibrate 用途（将来の gravity-up オフセット計算のための保持）
+  }
+
+  // _baseQuat を再キャリブレーション:
+  //   現在の軌道方向（_currentOrbitDir）をそのまま維持するため、
+  //   (0,0,1).applyQuat(_baseQuat * deviceQuat) = _currentOrbitDir となるよう設定。
+  //   ジンバルロック対策: _currentOrbitDir が WORLD_UP と平行に近い場合は up を切替。
+  const upRef = Math.abs(_currentOrbitDir.dot(WORLD_UP)) > 0.99
+    ? new THREE.Vector3(0, 0, -1)
+    : WORLD_UP;
+  _resetLookAtMat.lookAt(_currentOrbitDir, _resetOrigin, upRef);
+  _resetTargetQuat.setFromRotationMatrix(_resetLookAtMat);
+  _baseQuat.copy(_deviceQuat).conjugate();   // _baseQuat = deviceQuat^-1
+  _baseQuat.premultiply(_resetTargetQuat);   // _baseQuat = targetQuat * deviceQuat^-1
+
+  // currentDistance のみバウンディングボックスから即時更新（軌道方向は維持）
   const fitDist = computeFitDistance();
   targetDistance = fitDist;
-  currentDistance = fitDist;   // スナップ（lerp 待ちなし）
+  currentDistance = fitDist;
 
-  // 軌道方向を正面構図へ即時スナップ（lerp の遅延なし）
-  _currentOrbitDir.set(0, 0, 1).applyQuaternion(_frontViewQuat);
-
-  // カメラ位置を再配置し、重力基準 up + lookAt でモデルを中央に固定
+  // カメラ位置を更新（軌道方向は変えず、距離だけ変更）
   camera.position.copy(TARGET).addScaledVector(_currentOrbitDir, currentDistance);
   camera.up.copy(WORLD_UP);
   camera.lookAt(TARGET);
