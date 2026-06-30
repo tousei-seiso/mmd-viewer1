@@ -126,6 +126,29 @@
     <span id="seek-time-total">00:00</span>
   </div>
 
+  <!-- [一時デバッグ] どこで実行が止まるかを画面に出すマイルストーン診断。
+       main.js より前に実行され、各段階を #status に表示する。原因特定後に削除する。 -->
+  <script type="module">
+    const s = () => document.getElementById('status');
+    // 各段階表示後に2フレーム待ち、ブラウザに再描画の機会を与える（ハング位置を可視化）。
+    const tick = (t) => new Promise((r) => {
+      const el = s(); if (el) { el.classList.remove('hidden'); el.textContent = t; }
+      requestAnimationFrame(() => requestAnimationFrame(r));
+    });
+    try {
+      await tick('診断① JS起動');
+      await import('three');
+      await tick('診断② three読込OK');
+      await import('three/addons/animation/MMDAnimationHelper.js');
+      await tick('診断③ addons読込OK');
+      await import('./view3d.js');
+      await tick('診断④ view3d評価OK');
+    } catch (e) {
+      const el = s();
+      if (el) { el.classList.remove('hidden'); el.textContent = '✗診断 ' + (e && (e.message || e.stack || e)); }
+    }
+  </script>
+
   <script type="module" src="main.js"></script>
 </body>
 </html>
