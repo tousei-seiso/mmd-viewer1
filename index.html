@@ -63,6 +63,17 @@
        クリックで ui.js の setupScreenshot() → view3d.js の takeScreenshot() が呼ばれる。 -->
   <button id="screenshot-toggle" type="button" title="スクリーンショットを保存">📷</button>
 
+  <!-- AR（背面カメラ）ON/OFF トグル（スクリーンショットアイコンの下）。
+       ON にすると通常の背景・床/グリッドを描画せず、スマホ背面カメラの映像を背景として
+       リアルタイム表示し、その中にモデルを重ねて表示する（view3d.js の setArEnabled）。 -->
+  <button id="ar-toggle" type="button" title="AR（背面カメラ）背景をON/OFF" aria-pressed="false">📹</button>
+
+  <!-- AR 背景用のカメラ映像。THREE.VideoTexture のソースにするためだけの要素で、
+       画面には表示しない（style.css で不可視化）。iOS Safari はテクスチャ化のため
+       display:none を嫌うので、画面外へ寄せて事実上見えないようにしている。
+       muted/playsinline は自動再生（ユーザー操作起点）の前提条件。 -->
+  <video id="ar-video" playsinline muted></video>
+
   <!-- 色変更パネル（HTML5 標準カラーピッカー。背景＝scene.background / 床＝床メッシュの色） -->
   <div id="color-panel" class="hidden">
     <label class="color-row">
@@ -108,6 +119,6 @@
   </div>
 
   <!-- ?v= はキャッシュ破棄用。更新時に番号を上げると確実に最新JSが読み込まれる。 -->
-  <script type="module" src="main.js?v=6"></script>
+  <script type="module" src="main.js?v=7"></script>
 </body>
 </html>

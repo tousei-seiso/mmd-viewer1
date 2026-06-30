@@ -28,7 +28,7 @@ import {
   getOrientationAngles,
   renderSwayDebug,
   isSwayDebug,
-} from './sensor.js?v=6';
+} from './sensor.js?v=7';
 
 // 楽曲の読み込み・再生制御・シークバー（audio.js）
 import {
@@ -37,7 +37,7 @@ import {
   updateSeekBar,
   onAudioEnded,
   isSeekScrubbing,
-} from './audio.js?v=6';
+} from './audio.js?v=7';
 
 // -----------------------------------------------------------------------------
 // 設定値
@@ -682,11 +682,125 @@ export function resetView() {
 //   背景: scene.background（THREE.Color を set） / 床: ground メッシュの material.color。
 // -----------------------------------------------------------------------------
 export function applyBgColor(value) {
+  // AR 中は背景がカメラ映像（VideoTexture）なので、色は「AR 解除後に戻る背景」へ反映する。
+  // これにより、AR を切った瞬間に選んだ色がそのまま現れる。
+  if (arActive) {
+    if (arSavedBackground && arSavedBackground.isColor) arSavedBackground.set(value);
+    else arSavedBackground = new THREE.Color(value);
+    return;
+  }
   if (scene.background && scene.background.isColor) scene.background.set(value);
   else scene.background = new THREE.Color(value);
 }
 export function applyFloorColor(value) {
   if (ground && ground.material && ground.material.color) ground.material.color.set(value);
+}
+
+// -----------------------------------------------------------------------------
+// AR（背面カメラ）背景モード（📹 アイコン）
+//   ON 時: 端末の背面カメラ映像を取得し、THREE.VideoTexture として scene.background に
+//          設定する。通常の床(ground)・グリッド(grid)は隠し、モデルだけがカメラ映像の
+//          上に重なって見える（“その場にモデルがいる”ように見せる簡易 AR）。
+//          背景を VideoTexture にすることで描画は WebGL 内で完結し、既存の
+//          スクリーンショット（描画バッファ読み出し）にもカメラ映像がそのまま写る。
+//   OFF 時: ストリームを停止してテクスチャを破棄し、元の背景色と床/グリッドを復帰する。
+//   ※ カメラ取得には HTTPS（または localhost）とユーザー許可が必要（GitHub Pages は HTTPS）。
+//   ※ 端末を傾けるとジャイロ連動カメラ(updateCameraPose)でモデルの周囲を見回せる。
+// -----------------------------------------------------------------------------
+let arActive = false;
+let arStream = null;                       // getUserMedia の MediaStream（停止時に track.stop()）
+let arTexture = null;                      // scene.background に設定する VideoTexture
+let arSavedBackground = scene.background;  // AR 解除後に戻す通常背景（THREE.Color）
+const arVideo = document.getElementById('ar-video');
+
+export function isArEnabled() { return arActive; }
+
+// カメラ映像をビューポートへ「cover」（はみ出しを切り取り中央寄せ）で合わせる。
+//   scene.background に設定したテクスチャは、その UV 変換（center/repeat）が背景描画へ
+//   そのまま反映される。映像と画面のアスペクト比のズレをここで補正し、引き伸ばさない。
+function updateArBackgroundFit() {
+  if (!arActive || !arTexture || !arVideo) return;
+  const vw = arVideo.videoWidth, vh = arVideo.videoHeight;
+  if (!vw || !vh) return; // メタデータ未確定（loadedmetadata 前）はスキップ
+  const width = container.clientWidth || window.innerWidth;
+  const height = container.clientHeight || window.innerHeight;
+  const screenAspect = width / height;
+  const videoAspect = vw / vh;
+  arTexture.center.set(0.5, 0.5);
+  if (screenAspect > videoAspect) {
+    // 画面が映像より横長 → 縦（上下）を切り取って横幅を満たす
+    arTexture.repeat.set(1, videoAspect / screenAspect);
+  } else {
+    // 画面が映像より縦長 → 横（左右）を切り取って高さを満たす
+    arTexture.repeat.set(screenAspect / videoAspect, 1);
+  }
+  arTexture.needsUpdate = true;
+}
+
+async function enableAr() {
+  if (arActive) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error('このブラウザはカメラ取得に対応していません');
+  }
+  if (!arVideo) throw new Error('AR 用の video 要素が見つかりません');
+
+  // 背面カメラを優先（ideal なので非対応端末では前面にフォールバック）。音声は不要。
+  arStream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: { ideal: 'environment' } },
+    audio: false,
+  });
+  arVideo.srcObject = arStream;
+  arVideo.muted = true;       // 自動再生の前提（音声トラックは無いが念のため）
+  arVideo.playsInline = true; // iOS でフルスクリーン再生に奪われないように
+  // メタデータが来てから videoWidth/Height が確定する。play() は環境により拒否されても続行。
+  try { await arVideo.play(); } catch (_) { /* 自動再生制限でも以後フレームは届く */ }
+
+  arTexture = new THREE.VideoTexture(arVideo);
+  arTexture.colorSpace = THREE.SRGBColorSpace; // カメラ映像は sRGB
+  arTexture.minFilter = THREE.LinearFilter;
+  arTexture.magFilter = THREE.LinearFilter;
+
+  // 解除後に戻すため、現在の通常背景を退避してから差し替える。
+  arSavedBackground = scene.background;
+  scene.background = arTexture;
+
+  // 床・グリッドは AR では邪魔なので隠す（モデルだけをカメラ映像へ重ねる）。
+  ground.visible = false;
+  grid.visible = false;
+
+  arActive = true;
+  // アスペクト補正は即時＋メタデータ確定後の両方で行う（初回は寸法未確定のことが多い）。
+  updateArBackgroundFit();
+  arVideo.addEventListener('loadedmetadata', updateArBackgroundFit, { once: true });
+}
+
+function disableAr() {
+  if (!arActive) return;
+  arActive = false;
+  // 背景を通常色へ戻し、床・グリッドを復帰させる。
+  scene.background = arSavedBackground;
+  ground.visible = true;
+  grid.visible = true;
+  // ストリーム停止（端末のカメラ使用インジケータを消す）とリソース解放。
+  if (arStream) {
+    for (const track of arStream.getTracks()) track.stop();
+    arStream = null;
+  }
+  if (arVideo) {
+    try { arVideo.pause(); } catch (_) { /* 無視 */ }
+    arVideo.srcObject = null;
+  }
+  if (arTexture) {
+    arTexture.dispose();
+    arTexture = null;
+  }
+}
+
+// ui.js の AR ボタンから呼ぶ。on=true で有効化、false で無効化。
+// 失敗（非対応・許可拒否）時は例外を投げるので、呼び出し側でメッセージ表示・UI 復帰する。
+export async function setArEnabled(on) {
+  if (on) await enableAr();
+  else disableAr();
 }
 
 // -----------------------------------------------------------------------------
@@ -1316,6 +1430,9 @@ function animate() {
   renderSwayDebug(swayBones ? swayBones.length : '-');
   renderCameraDebug(); // 📊 ON 時はカメラ角・生センサー値を表示（sway 表示を上書き）
 
+  // AR 背景（カメラ映像）は毎フレーム最新フレームへ更新する（VideoTexture の再アップロード）。
+  if (arActive && arTexture) arTexture.needsUpdate = true;
+
   renderer.render(scene, camera);
 }
 
@@ -1338,6 +1455,9 @@ export function resizeRenderer() {
   // false だと描画バッファ/カメラのアスペクトだけ変わり表示サイズが初期値のまま残り、
   // 全画面化などで高さが変わるとモデルが横に伸びる原因になる。
   renderer.setSize(width, height);
+
+  // AR 背景中はビューポート変化に追従してカメラ映像の cover を再計算する。
+  if (arActive) updateArBackgroundFit();
 }
 
 // -----------------------------------------------------------------------------

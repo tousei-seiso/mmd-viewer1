@@ -8,10 +8,10 @@
 //     ui.js      … 各種アイコン・ダイアログ・カラーパレット等の UI 配線
 // =============================================================================
 
-import { initSensors } from './sensor.js?v=6';
-import { initAudio } from './audio.js?v=6';
-import * as view3d from './view3d.js?v=6';
-import { initUI } from './ui.js?v=6';
+import { initSensors } from './sensor.js?v=7';
+import { initAudio } from './audio.js?v=7';
+import * as view3d from './view3d.js?v=7';
+import { initUI } from './ui.js?v=7';
 
 // 1) センサー入力（加速度・揺れもの）の購読開始
 initSensors();

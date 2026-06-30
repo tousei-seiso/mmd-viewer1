@@ -34,7 +34,9 @@ import {
   getNowPlaying,
   resizeRenderer,
   takeScreenshot,
-} from './view3d.js?v=6';
+  setArEnabled,
+  isArEnabled,
+} from './view3d.js?v=7';
 
 // -----------------------------------------------------------------------------
 // 画面の向き固定トグル（🔓⇄🔒）
@@ -365,6 +367,48 @@ function setupPhysicsToggle() {
 }
 
 // -----------------------------------------------------------------------------
+// AR（背面カメラ）背景 ON/OFF トグル（📹 アイコン）
+//   ON にすると view3d.js の setArEnabled(true) が背面カメラを取得し、その映像を背景に
+//   して床/グリッドを隠す。OFF で元の背景・床へ戻す。カメラ取得は非同期かつ許可待ちなので、
+//   処理中はボタンを一時無効化し、失敗（非対応・許可拒否）時は状態表示を出して UI を戻す。
+// -----------------------------------------------------------------------------
+function setupArToggle() {
+  const arToggleBtn = document.getElementById('ar-toggle');
+  if (!arToggleBtn) return;
+
+  function updateArButton(busy = false) {
+    arToggleBtn.disabled = busy;
+    arToggleBtn.setAttribute('aria-pressed', String(isArEnabled()));
+    arToggleBtn.title = busy
+      ? 'カメラを準備中…'
+      : (isArEnabled() ? 'AR背景：ON（タップでOFF）' : 'AR背景：OFF（タップでON）');
+  }
+
+  async function toggleAr() {
+    const turningOn = !isArEnabled();
+    updateArButton(true); // 取得中は二重タップ防止で無効化
+    const prevText = getNowPlaying();
+    if (turningOn) setNowPlaying('⏳ カメラを準備中...');
+    try {
+      await setArEnabled(turningOn);
+    } catch (error) {
+      console.error('AR（カメラ背景）の切り替えに失敗しました:', error);
+      // 許可拒否・非対応など。状態表示を出して元の状態へ戻す。
+      const denied = error && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
+      setNowPlaying(denied ? '⚠️ カメラの使用が許可されませんでした' : '⚠️ カメラを利用できませんでした');
+      updateArButton(false);
+      return;
+    }
+    updateArButton(false);
+    // ON 化成功時はステータスを元へ戻す（OFF 化時はそのまま）。
+    if (turningOn) setNowPlaying(prevText || '🎵 モーション未選択');
+  }
+
+  arToggleBtn.addEventListener('click', () => { toggleAr(); });
+  updateArButton(false); // 起動時の初期表示
+}
+
+// -----------------------------------------------------------------------------
 // 初期化（エントリーポイントから呼ぶ）。各 UI の DOM 取得・イベント配線をまとめる。
 // -----------------------------------------------------------------------------
 export function initUI() {
@@ -375,4 +419,5 @@ export function initUI() {
   setupModelDialog();
   setupMotionDialog();
   setupPhysicsToggle();
+  setupArToggle();
 }
