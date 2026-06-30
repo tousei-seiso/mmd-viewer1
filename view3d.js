@@ -320,14 +320,28 @@ export async function switchModel(path) {
 }
 
 // -----------------------------------------------------------------------------
-// カメラ制御
-//   DeviceOrientationEvent の alpha/beta/gamma から deviceQuat を構成し、
-//   camera.quaternion = deviceQuat として直接代入する（AR スタイル）。
-//   カメラ位置は (0,0,1).applyQuat(deviceQuat) * currentDistance の軌道。
-//   スマホのロール（ハンドル回転）は camera.up = WORLD_UP によりカメラ位置の
-//   変化に変換される（モデルは常に upright を保つ）。
+// カメラ制御 ―― ARCameraController（階層分離でジンバルロック／反転を根絶）
 //
-//   モデルの正面方向はリセット時に applyModelYaw() で調整する。
+//   【設計】単一カメラノードに「位置(Spherical)＋姿勢(lookAt)＋ロール(rotateZ)」を
+//   集中させる旧方式は、視線が真上・真下を向く極で atan2／lookAt が同時に特異化し、
+//   方位角が180°飛ぶ（床ごと反転する）致命的バグを抱えていた。これを解消するため、
+//   回転を物理的に分離した親子階層（THREE.Group）へ作り替える:
+//
+//     Pivot (親)  … TARGET に配置。重力軸(world Y)まわりの Yaw（方位）だけを担う。
+//       └ Arm (子) … ローカル X 軸まわりの Pitch（仰角）だけを担う。
+//           └ Camera (孫) … ローカル +Z 方向へ distance だけ離れて配置。常に原点
+//                            （＝TARGET）を見下ろす向き（ローカル回転は単位）。
+//
+//   この構造では「カメラ右ベクトル＝水平」が常に保証される（Yaw も Pitch も水平軸を
+//   傾けない）ため、ロールは構造上ゼロ＝水平が絶対に崩れない。スマホのハンドル回し
+//   （ロール）は視線ベクトル f を変えないので、モデルは一切傾かない（要件1）。
+//   距離は Camera のローカル +Z 量で常に一定（要件2）。Camera は常に原点を向く（要件3）。
+//
+//   極（天頂・真下）の反転は「同一視線を表す2解 (yaw,pitch) と (yaw+π, π−pitch) の
+//   うち前フレームに近い方を選ぶ連続化」で回避する。これにより極を越えてもカメラが
+//   滑らかに頭上／足裏側へ回り込み、180°の瞬間反転が起きない。
+//
+//   モデルの正面方向はリセット時に applyModelYaw() で調整する（従来どおり）。
 // -----------------------------------------------------------------------------
 
 function clamp(value, min, max) {
@@ -338,12 +352,9 @@ function clamp(value, min, max) {
 const _Q_CORR_X = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
 
 // フレームごとに使い回す一時オブジェクト
-const _euler_dq     = new THREE.Euler();
-const _deviceQuat   = new THREE.Quaternion();
-const _cameraBack   = new THREE.Vector3(); // deviceQuat 由来のカメラ前方ベクトル（一時）
-const _fwdVec       = new THREE.Vector3(); // 水平射影・setFromUnitVectors 計算用の一時ベクトル
-const _rollFreeQuat = new THREE.Quaternion(); // ロール除去済みクォータニオン
-const _spherical    = new THREE.Spherical();  // カメラ位置計算用
+const _euler_dq   = new THREE.Euler();
+const _deviceQuat = new THREE.Quaternion();
+const _userDir    = new THREE.Vector3(); // resetView でのユーザー方向（一時）
 
 // alpha/beta/gamma（度単位）→ _deviceQuat（Three.js DeviceOrientationControls 準拠）
 function computeDeviceQuat(alpha, beta, gamma) {
@@ -376,37 +387,108 @@ function applyModelYaw(targetUserDir) {
   currentModel.rotateOnWorldAxis(WORLD_UP, diff);
 }
 
-// 毎フレーム呼ばれるカメラ姿勢更新
-//   ① deviceQuat の前方ベクトルから Spherical 座標を計算してカメラ位置を設定する。
-//   ② camera.up = WORLD_UP 固定 + lookAt で重力軸を維持した姿勢を確立する。
-//   ③ デバイスのロール（gamma）だけを rotateZ でローカル Z 軸まわりに合成する。
-//   こうすることで「仰角・方位角 → 位置」「pitch・yaw → lookAt」「roll → rotateZ」と
-//   責務が分離され、スマホをどう向けても座標系が崩壊しない。
+// --- ARCameraController ------------------------------------------------------
+//   Pivot(Yaw) → Arm(Pitch) → Camera(距離) の階層を構築し、毎フレーム
+//   update() でデバイス姿勢（または起動時の基準角＋ドラッグ）から角度を解決する。
+const SMOOTH_ANGLE = 0.25; // 角度追従の滑らかさ（0=固定, 1=即時）
+
+class ARCameraController {
+  constructor(cam, target, parent) {
+    this.camera = cam;
+
+    // 階層ノード（重力軸 Yaw → 仰角 Pitch → 距離）
+    this.pivot = new THREE.Group(); // world Y 軸まわりの Yaw（重力軸＝水平維持の要）
+    this.arm   = new THREE.Group(); // ローカル X 軸まわりの Pitch（仰角）
+    this.pivot.position.copy(target);
+    this.pivot.add(this.arm);
+    this.arm.add(cam);
+    parent.add(this.pivot);
+
+    // 連続な内部状態（極を越えても飛ばないよう前フレーム値を保持）
+    this.yaw = BASE_YAW;
+    this.pitch = BASE_PITCH;
+    this.distance = ORBIT_RADIUS;
+
+    // カメラは Arm のローカル +Z 方向へ distance だけ離し、原点（TARGET）を向かせる。
+    // ローカル回転は単位（=Arm の -Z を見る）。これで「常に中心を向く」が構造的に成立。
+    cam.position.set(0, 0, this.distance);
+    cam.rotation.set(0, 0, 0);
+    cam.up.set(0, 1, 0);
+  }
+
+  _wrapPi(a) {
+    while (a >  Math.PI) a -= 2 * Math.PI;
+    while (a < -Math.PI) a += 2 * Math.PI;
+    return a;
+  }
+  // 最短角で補間（周期境界をまたいでも飛ばない）
+  _lerpAngleShort(a, b, t) { return a + this._wrapPi(b - a) * t; }
+
+  // 毎フレーム更新。q: デバイス姿勢クォータニオン。opts: { hasDevice, dragYaw, dragPitch, targetDistance }
+  update(q, opts) {
+    let yawTarget = this.yaw;
+    let pitchTarget = this.pitch;
+
+    if (opts.hasDevice) {
+      // 視線（光軸）方向 f＝カメラ前方。ロール（ハンドル回し）では f は変化しない。
+      const f = _userDir.set(0, 0, -1).applyQuaternion(q);
+      const rawPitch = Math.asin(THREE.MathUtils.clamp(f.y, -1, 1)); // 仰角 ∈ [-90°,90°]
+      const cosP = Math.sqrt(Math.max(0, 1 - f.y * f.y));            // 水平成分の大きさ
+      // 極（cosP≈0）では方位が不定。前フレームの yaw を保持して連続性を守る。
+      const yaw = cosP < 1e-3 ? this.yaw : Math.atan2(-f.x, -f.z);
+
+      // 同一視線を表す2解: A=(yaw, pitch) と B=(yaw+π, π−pitch)。
+      // 前フレーム (this.yaw, this.pitch) に近い方を選ぶ＝極を越えても yaw が180°飛ばない。
+      const aYaw = yaw,                       aPitch = rawPitch;
+      const bYaw = this._wrapPi(yaw + Math.PI), bPitch = this._wrapPi(Math.PI - rawPitch);
+      const da = Math.abs(this._wrapPi(aYaw - this.yaw)) + Math.abs(this._wrapPi(aPitch - this.pitch));
+      const db = Math.abs(this._wrapPi(bYaw - this.yaw)) + Math.abs(this._wrapPi(bPitch - this.pitch));
+      if (db < da) { yawTarget = bYaw; pitchTarget = bPitch; }
+      else         { yawTarget = aYaw; pitchTarget = aPitch; }
+    }
+
+    // 平滑化（最短角補間）
+    this.yaw   = this._lerpAngleShort(this.yaw,   yawTarget,   SMOOTH_ANGLE);
+    this.pitch = this._lerpAngleShort(this.pitch, pitchTarget, SMOOTH_ANGLE);
+
+    // ズーム距離を滑らかに追従させ、カメラのローカル +Z 量へ反映（要件2：距離一定）
+    this.distance += (opts.targetDistance - this.distance) * ZOOM_SMOOTHING;
+    this.camera.position.set(0, 0, this.distance);
+
+    // ドラッグオフセットを加味して階層へ反映。
+    //   Pivot=Yaw（重力Y軸） / Arm=Pitch（ローカルX軸）。ロール成分は一切入れない。
+    this.pivot.rotation.set(0, this.yaw + opts.dragYaw, 0);
+    this.arm.rotation.set(this.pitch + opts.dragPitch, 0, 0);
+  }
+
+  // ズーム距離を即時設定（リセット時に滑らか追従を待たず確定させる）
+  setDistance(d) {
+    this.distance = d;
+    this.camera.position.set(0, 0, d);
+  }
+}
+
+// コントローラ実体（カメラを階層へ組み込む）。以降カメラ姿勢はこれが一手に握る。
+const cameraController = new ARCameraController(camera, TARGET, scene);
+
+// 毎フレーム呼ばれるカメラ姿勢更新（デバイス姿勢＋ドラッグ＋ズームを集約）
 function updateCameraPose() {
-  const angles = getOrientationAngles();
-  computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
-  currentDistance += (targetDistance - currentDistance) * ZOOM_SMOOTHING;
-
-  // ① deviceQuat でカメラ前方ベクトルを求め、カメラ位置を Spherical で設定
-  //    カメラは TARGET から「-deviceForward」方向に currentDistance 離れた球面上
-  _cameraBack.set(0, 0, -1).applyQuaternion(_deviceQuat);
-  const phi   = Math.acos(THREE.MathUtils.clamp(-_cameraBack.y, -1, 1));
-  const theta = Math.atan2(-_cameraBack.x, -_cameraBack.z);
-  _spherical.set(currentDistance, phi, theta);
-  camera.position.setFromSpherical(_spherical).add(TARGET);
-
-  // ② WORLD_UP を維持しながら TARGET を向く（重力軸固定で pitch・yaw を自動解決）
-  camera.up.set(0, 1, 0);
-  camera.lookAt(TARGET);
-
-  // ③ デバイスのロール（gamma）をカメラのローカル Z 軸まわりに合成
-  //    gamma > 0 = 右側が下がる → camera.rotateZ(-gamma) でシーンが CCW に見える（自然な挙動）
-  camera.rotateZ(-THREE.MathUtils.degToRad(angles.gamma ?? 0));
+  const hasDevice = isOrientationActive();
+  if (hasDevice) {
+    const angles = getOrientationAngles();
+    computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
+  }
+  cameraController.update(_deviceQuat, {
+    hasDevice,
+    dragYaw,
+    dragPitch,
+    targetDistance,
+  });
 }
 
 // -----------------------------------------------------------------------------
 // タッチ／マウス操作 ―― ドラッグ回転 ＆ ピンチ/ホイールズーム
-//   ピンチ/ホイール由来の距離（currentDistance）はカメラ後方ベクトルのスケールに使う。
+//   ピンチ/ホイール由来の距離（targetDistance）は cameraController がカメラの公転半径へ反映する。
 // -----------------------------------------------------------------------------
 
 const MIN_DISTANCE = 5;          // 最も寄れる距離
@@ -422,9 +504,8 @@ const ZOOM_SMOOTHING = 0.2;      // ズーム距離の追従の滑らかさ
 let dragYaw = 0;
 let dragPitch = 0;
 
-// ピンチ/ホイールによるズーム距離（目標値と、滑らかに追従する現在値）
+// ピンチ/ホイールによるズーム距離（目標値）。実距離の滑らか追従は cameraController が担う。
 let targetDistance = ORBIT_RADIUS;
-let currentDistance = ORBIT_RADIUS;
 
 // 複数タッチ追跡（ポインタID → 最新座標）
 const activePointers = new Map();
@@ -577,17 +658,18 @@ export function resetView() {
   dragYaw = 0;
   dragPitch = 0;
 
-  // 現在のデバイスクォータニオンからユーザーの方向（= カメラ軌道方向）を求める
+  // 現在のデバイスクォータニオンからユーザーの方向（= モデル中心→カメラ方向）を求める。
+  // カメラ視線 f=(0,0,-1)·q に対し、ユーザーは反対側 (0,0,1)·q に居る。
   const angles = getOrientationAngles();
   computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
-  _cameraBack.set(0, 0, 1).applyQuaternion(_deviceQuat);
+  _userDir.set(0, 0, 1).applyQuaternion(_deviceQuat);
 
   // モデルの正面をユーザー方向へ向ける（Y 軸回転のみ）
-  applyModelYaw(_cameraBack);
+  applyModelYaw(_userDir);
 
   const fitDist = computeFitDistance();
   targetDistance = fitDist;
-  currentDistance = fitDist;
+  cameraController.setDistance(fitDist); // 滑らか追従を待たず即時確定
 }
 
 // -----------------------------------------------------------------------------
