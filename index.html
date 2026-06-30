@@ -17,24 +17,6 @@
     }
   }
   </script>
-
-  <!-- [一時デバッグ] 初期化中の例外を画面の #status に可視化（原因特定後に削除）。 -->
-  <script>
-    (function () {
-      function show(msg) {
-        var el = document.getElementById('status');
-        if (el) { el.classList.remove('hidden'); el.textContent = '⚠ ' + msg; }
-      }
-      window.addEventListener('error', function (e) {
-        var where = (e.filename || '').split('/').pop();
-        show((e.message || 'error') + ' @ ' + where + ':' + e.lineno + ':' + e.colno);
-      });
-      window.addEventListener('unhandledrejection', function (e) {
-        var r = e.reason;
-        show('promise: ' + ((r && (r.message || r.stack)) || r));
-      });
-    })();
-  </script>
 </head>
 <body>
   <!-- 3D 空間（ステージ）を描画するコンテナ。画面全体に広げる -->
@@ -125,29 +107,7 @@
     <span id="seek-time-total">00:00</span>
   </div>
 
-  <!-- [一時デバッグ] どこで実行が止まるかを #status に出すマイルストーン診断。
-       main.js より前に走り、CDN/three/addons/view3d 評価のどこで詰まるかを切り分ける。 -->
-  <script type="module">
-    const s = () => document.getElementById('status');
-    const tick = (t) => new Promise((r) => {
-      const el = s(); if (el) { el.classList.remove('hidden'); el.textContent = t; }
-      requestAnimationFrame(() => requestAnimationFrame(r));
-    });
-    try {
-      await tick('診断① JS起動');
-      await import('three');
-      await tick('診断② three読込OK');
-      await import('three/addons/animation/MMDAnimationHelper.js');
-      await tick('診断③ addons読込OK');
-      await import('./view3d.js?v=4');
-      await tick('診断④ view3d評価OK→初期化へ');
-    } catch (e) {
-      const el = s();
-      if (el) { el.classList.remove('hidden'); el.textContent = '✗診断 ' + (e && (e.message || e.stack || e)); }
-    }
-  </script>
-
   <!-- ?v= はキャッシュ破棄用。更新時に番号を上げると確実に最新JSが読み込まれる。 -->
-  <script type="module" src="main.js?v=4"></script>
+  <script type="module" src="main.js?v=5"></script>
 </body>
 </html>
