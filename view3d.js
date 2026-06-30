@@ -417,6 +417,7 @@ class ARCameraController {
   }
 
   _wrapPi(a) {
+    if (!Number.isFinite(a)) return 0; // NaN/Infinity 混入時の無限ループ・発散を防止
     while (a >  Math.PI) a -= 2 * Math.PI;
     while (a < -Math.PI) a += 2 * Math.PI;
     return a;
