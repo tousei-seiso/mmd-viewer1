@@ -27,6 +27,7 @@ import {
   isOrientationActive,
   getOrientationAngles,
   renderSwayDebug,
+  isSwayDebug,
 } from './sensor.js';
 
 // 楽曲の読み込み・再生制御・シークバー（audio.js）
@@ -337,9 +338,17 @@ export async function switchModel(path) {
 //   （ロール）は視線ベクトル f を変えないので、モデルは一切傾かない（要件1）。
 //   距離は Camera のローカル +Z 量で常に一定（要件2）。Camera は常に原点を向く（要件3）。
 //
-//   極（天頂・真下）の反転は「同一視線を表す2解 (yaw,pitch) と (yaw+π, π−pitch) の
-//   うち前フレームに近い方を選ぶ連続化」で回避する。これにより極を越えてもカメラが
-//   滑らかに頭上／足裏側へ回り込み、180°の瞬間反転が起きない。
+//   【極での180°反転の根絶】方位(Yaw)を視線ベクトル f の水平成分 atan2(f.x,f.z) から
+//   求めると、視線が真上・真下を向く極で水平成分が消え、符号反転＝方位が180°飛ぶ
+//   （床ごと反転する）。これがジンバルロックの正体。そこで方位は f からではなく
+//   デバイス姿勢クォータニオン q の「重力Y軸まわりのねじれ角 twist = 2·atan2(q.y, q.w)」
+//   から求める。twist はスマホを前後に倒す（recline）操作では一定に保たれるため、
+//   頭上・足裏の極を通過しても方位が一切飛ばない（数値検証済み）。仰角(Pitch)は
+//   視線の上下角 asin(f.y) を用いる。旋回時のみ twist が追従して方位が変わる。
+//
+//   ※ スマホをほぼ垂直に保ったままの「ハンドル回し」は、デバイス角(α/β/γ)の構造的な
+//     ジンバルロック（β≈90°でαとγが縮退）により方位回転として現れるが、Yaw/Pitch の
+//     2軸のみで構成し Roll を一切入れないため、モデルが画面内で傾くことはない。
 //
 //   モデルの正面方向はリセット時に applyModelYaw() で調整する（従来どおり）。
 // -----------------------------------------------------------------------------
@@ -404,10 +413,11 @@ class ARCameraController {
     this.arm.add(cam);
     parent.add(this.pivot);
 
-    // 連続な内部状態（極を越えても飛ばないよう前フレーム値を保持）
+    // 連続な内部状態（前フレーム値を平滑化の基準に使う）
     this.yaw = BASE_YAW;
     this.pitch = BASE_PITCH;
     this.distance = ORBIT_RADIUS;
+    this.lastFy = 0; // 直近の視線 f.y（テレメトリ表示用）
 
     // カメラは Arm のローカル +Z 方向へ distance だけ離し、原点（TARGET）を向かせる。
     // ローカル回転は単位（=Arm の -Z を見る）。これで「常に中心を向く」が構造的に成立。
@@ -431,24 +441,19 @@ class ARCameraController {
     let pitchTarget = this.pitch;
 
     if (opts.hasDevice) {
-      // 視線（光軸）方向 f＝カメラ前方。ロール（ハンドル回し）では f は変化しない。
+      // 仰角(Pitch) = 視線の上下角 asin(f.y)。f=視線(光軸)方向。傾けに対し滑らかで、
+      // 極（真上 f.y=-1 / 真下 f.y=+1）でも値が連続。範囲は [-90°,90°]。
       const f = _userDir.set(0, 0, -1).applyQuaternion(q);
-      const rawPitch = Math.asin(THREE.MathUtils.clamp(f.y, -1, 1)); // 仰角 ∈ [-90°,90°]
-      const cosP = Math.sqrt(Math.max(0, 1 - f.y * f.y));            // 水平成分の大きさ
-      // 極（cosP≈0）では方位が不定。前フレームの yaw を保持して連続性を守る。
-      const yaw = cosP < 1e-3 ? this.yaw : Math.atan2(-f.x, -f.z);
+      this.lastFy = f.y; // テレメトリ表示用
+      pitchTarget = Math.asin(THREE.MathUtils.clamp(f.y, -1, 1));
 
-      // 同一視線を表す2解: A=(yaw, pitch) と B=(yaw+π, π−pitch)。
-      // 前フレーム (this.yaw, this.pitch) に近い方を選ぶ＝極を越えても yaw が180°飛ばない。
-      const aYaw = yaw,                       aPitch = rawPitch;
-      const bYaw = this._wrapPi(yaw + Math.PI), bPitch = this._wrapPi(Math.PI - rawPitch);
-      const da = Math.abs(this._wrapPi(aYaw - this.yaw)) + Math.abs(this._wrapPi(aPitch - this.pitch));
-      const db = Math.abs(this._wrapPi(bYaw - this.yaw)) + Math.abs(this._wrapPi(bPitch - this.pitch));
-      if (db < da) { yawTarget = bYaw; pitchTarget = bPitch; }
-      else         { yawTarget = aYaw; pitchTarget = aPitch; }
+      // 方位(Yaw) = 重力Y軸まわりのねじれ角 twist = 2·atan2(q.y, q.w)。
+      // スマホを前後に倒す操作では twist が一定に保たれ、極を通過しても方位が
+      // 180°飛ばない（＝ジンバルロック反転の根絶）。旋回時のみ追従する。
+      yawTarget = 2 * Math.atan2(q.y, q.w);
     }
 
-    // 平滑化（最短角補間）
+    // 平滑化（最短角補間：360°境界・周期をまたいでも飛ばない）
     this.yaw   = this._lerpAngleShort(this.yaw,   yawTarget,   SMOOTH_ANGLE);
     this.pitch = this._lerpAngleShort(this.pitch, pitchTarget, SMOOTH_ANGLE);
 
@@ -485,6 +490,19 @@ function updateCameraPose() {
     dragPitch,
     targetDistance,
   });
+}
+
+// 📊 診断表示 ON のとき、実機の生センサー値とカメラ角を #status に出す（調整・原因切り分け用）。
+//   α/β/γ＝DeviceOrientation の生角度、f.y＝視線の上下成分、yaw/pitch＝カメラ角（度）。
+function renderCameraDebug() {
+  if (!statusEl || !isSwayDebug()) return;
+  const a = getOrientationAngles();
+  const c = cameraController;
+  const deg = (r) => Math.round(r * 180 / Math.PI);
+  statusEl.classList.remove('hidden');
+  statusEl.textContent =
+    `α${Math.round(a.alpha)} β${Math.round(a.beta)} γ${Math.round(a.gamma)} | ` +
+    `f.y ${c.lastFy.toFixed(2)} | yaw ${deg(c.yaw)} pitch ${deg(c.pitch)}`;
 }
 
 // -----------------------------------------------------------------------------
@@ -1311,6 +1329,7 @@ function animate() {
   // [一時診断] 加速度が実際に届いているか／対象ボーン数を画面に常時表示（sensor.js）。
   // 端末を振っても acc が 0.00 のままなら devicemotion 未配信が原因。右上アイコンで OFF にできる。
   renderSwayDebug(swayBones ? swayBones.length : '-');
+  renderCameraDebug(); // 📊 ON 時はカメラ角・生センサー値を表示（sway 表示を上書き）
 
   renderer.render(scene, camera);
 }
