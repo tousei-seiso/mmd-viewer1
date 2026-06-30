@@ -12,8 +12,8 @@
   <script type="importmap">
   {
     "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
     }
   }
   </script>
@@ -139,7 +139,7 @@
       await tick('診断② three読込OK');
       await import('three/addons/animation/MMDAnimationHelper.js');
       await tick('診断③ addons読込OK');
-      await import('./view3d.js?v=2');
+      await import('./view3d.js?v=3');
       await tick('診断④ view3d評価OK→初期化へ');
     } catch (e) {
       const el = s();
@@ -148,6 +148,6 @@
   </script>
 
   <!-- ?v= はキャッシュ破棄用。更新時に番号を上げると確実に最新JSが読み込まれる。 -->
-  <script type="module" src="main.js?v=2"></script>
+  <script type="module" src="main.js?v=3"></script>
 </body>
 </html>

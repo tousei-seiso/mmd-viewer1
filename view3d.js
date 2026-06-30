@@ -28,7 +28,7 @@ import {
   getOrientationAngles,
   renderSwayDebug,
   isSwayDebug,
-} from './sensor.js?v=2';
+} from './sensor.js?v=3';
 
 // 楽曲の読み込み・再生制御・シークバー（audio.js）
 import {
@@ -37,7 +37,7 @@ import {
   updateSeekBar,
   onAudioEnded,
   isSeekScrubbing,
-} from './audio.js?v=2';
+} from './audio.js?v=3';
 
 // -----------------------------------------------------------------------------
 // 設定値
@@ -911,7 +911,7 @@ function clearDance() {
 //   ・three と同じ CDN/バージョンから取得する（ammo.wasm.wasm も同階層にある）。
 //   ※ ON/OFF トグルの UI は ui.js。ここでは ensureAmmo / resetAmmoLoad 等を export する。
 // -----------------------------------------------------------------------------
-const AMMO_URL = 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/ammo.wasm.js';
+const AMMO_URL = 'https://unpkg.com/three@0.160.0/examples/jsm/libs/ammo.wasm.js';
 let ammoReadyPromise = null;
 
 function isAmmoReady() {
