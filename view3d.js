@@ -387,30 +387,27 @@ function updateCameraPose() {
   computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
   currentDistance += (targetDistance - currentDistance) * ZOOM_SMOOTHING;
 
-  // 1. カメラの位置は「スマホの傾き」ではなく「モデルからの距離」で固定する（突き抜け防止）
-  //    ※ここではあえて単純化し、回転行列から位置を導出します
-  const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(_deviceQuat);
-  camera.position.copy(TARGET).add(forward.multiplyScalar(-currentDistance));
+  // 1. 位置の計算: 既存のSpherical計算をそのまま流用（初期化を壊さない）
+  _cameraBack.set(0, 0, -1).applyQuaternion(_deviceQuat);
+  const phi = Math.acos(THREE.MathUtils.clamp(-_cameraBack.y, -1, 1));
+  const theta = Math.atan2(-_cameraBack.x, -_cameraBack.z);
+  _spherical.set(currentDistance, phi, theta);
+  camera.position.setFromSpherical(_spherical).add(TARGET);
 
-  // 2. 「重力軸固定」の回転を作成する
-  // lookAtの代わりに、クォータニオンを直接構築します
-  const targetDir = new THREE.Vector3().subVectors(TARGET, camera.position).normalize();
-  const up = new THREE.Vector3(0, 1, 0);
-  const right = new THREE.Vector3().crossVectors(up, targetDir).normalize();
-  const actualUp = new THREE.Vector3().crossVectors(targetDir, right).normalize();
-  
-  // 3. 基本姿勢（LookAtと同等）のクォータニオン
-  const lookAtQuat = new THREE.Quaternion().setFromRotationMatrix(
-    new THREE.Matrix4().makeBasis(right, actualUp, targetDir.negate())
-  );
+  // 2. 姿勢の計算: 既存の lookAt を活かしつつ、Roll の競合を避ける
+  // 「Upベクトルが動かない」状態で lookAt を呼ぶのが最優先
+  camera.up.set(0, 1, 0); 
+  camera.lookAt(TARGET);
 
-  // 4. ロール（ガンマ）を計算し、姿勢に合成する
-  // rotateZを使わず、クォータニオンとして掛け合わせることで、床の歪みを防ぐ
-  const rollQuat = new THREE.Quaternion().setFromAxisAngle(
-    new THREE.Vector3(0, 0, 1), 
-    -THREE.MathUtils.degToRad(angles.gamma ?? 0)
-  );
+  // 3. 最後に姿勢を少しだけ修正して Roll を加える
+  // rotateZ をやめ、quaternion の乗算に置き換える（これが最も安全）
+  const rollAngle = -THREE.MathUtils.degToRad(angles.gamma ?? 0);
+  const rollQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), rollAngle);
   
+  // カメラの既存の姿勢にロール分だけを「追加」する（上書きではない）
+  camera.quaternion.multiply(rollQuat);
+}
+
 // -----------------------------------------------------------------------------
 // タッチ／マウス操作 ―― ドラッグ回転 ＆ ピンチ/ホイールズーム
 //   ピンチ/ホイール由来の距離（currentDistance）はカメラ後方ベクトルのスケールに使う。
