@@ -28,7 +28,7 @@ import {
   getOrientationAngles,
   renderSwayDebug,
   isSwayDebug,
-} from './sensor.js?v=5';
+} from './sensor.js?v=6';
 
 // 楽曲の読み込み・再生制御・シークバー（audio.js）
 import {
@@ -37,7 +37,7 @@ import {
   updateSeekBar,
   onAudioEnded,
   isSeekScrubbing,
-} from './audio.js?v=5';
+} from './audio.js?v=6';
 
 // -----------------------------------------------------------------------------
 // 設定値
@@ -475,16 +475,19 @@ function updateCameraPose() {
   });
 }
 
-// 📊 診断表示 ON のとき、実機の生センサー値とカメラ角を #status に出す（調整・原因切り分け用）。
-//   α/β/γ＝DeviceOrientation の生角度、f.y＝視線の上下成分、yaw/pitch＝カメラ角（度）。
+// 📊 診断表示 ON のとき、カメラ角・生センサー値を #status に併記する（調整・原因切り分け用）。
+//   renderSwayDebug（揺れもの情報 acc/sway/bones）が毎フレーム先に書いた内容の後ろへ、
+//   α/β/γ（DeviceOrientation 生角度）・f.y（視線の上下成分）・dist（カメラ距離）を追記する。
+//   renderSwayDebug が毎フレーム textContent を上書きするので、併記しても累積しない。
 function renderCameraDebug() {
   if (!statusEl || !isSwayDebug()) return;
   const a = getOrientationAngles();
   const c = cameraController;
   statusEl.classList.remove('hidden');
-  statusEl.textContent =
+  const cam =
     `α${Math.round(a.alpha)} β${Math.round(a.beta)} γ${Math.round(a.gamma)} | ` +
     `f.y ${c.lastFy.toFixed(2)} | dist ${Math.round(c.distance)}`;
+  statusEl.textContent = statusEl.textContent ? `${statusEl.textContent} | ${cam}` : cam;
 }
 
 // -----------------------------------------------------------------------------
