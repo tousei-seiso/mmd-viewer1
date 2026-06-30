@@ -34,7 +34,7 @@ import {
   getNowPlaying,
   resizeRenderer,
   takeScreenshot,
-} from './view3d.js?v=3';
+} from './view3d.js?v=4';
 
 // -----------------------------------------------------------------------------
 // 画面の向き固定トグル（🔓⇄🔒）

@@ -28,7 +28,7 @@ import {
   getOrientationAngles,
   renderSwayDebug,
   isSwayDebug,
-} from './sensor.js?v=3';
+} from './sensor.js?v=4';
 
 // 楽曲の読み込み・再生制御・シークバー（audio.js）
 import {
@@ -37,7 +37,7 @@ import {
   updateSeekBar,
   onAudioEnded,
   isSeekScrubbing,
-} from './audio.js?v=3';
+} from './audio.js?v=4';
 
 // -----------------------------------------------------------------------------
 // 設定値
@@ -321,35 +321,27 @@ export async function switchModel(path) {
 }
 
 // -----------------------------------------------------------------------------
-// カメラ制御 ―― ARCameraController（階層分離でジンバルロック／反転を根絶）
+// カメラ制御 ―― ARCameraController（フル AR：カメラ姿勢＝デバイス姿勢）
 //
-//   【設計】単一カメラノードに「位置(Spherical)＋姿勢(lookAt)＋ロール(rotateZ)」を
-//   集中させる旧方式は、視線が真上・真下を向く極で atan2／lookAt が同時に特異化し、
-//   方位角が180°飛ぶ（床ごと反転する）致命的バグを抱えていた。これを解消するため、
-//   回転を物理的に分離した親子階層（THREE.Group）へ作り替える:
+//   【設計の結論】要件「モデルの床が現実の床と平行（重力に対して垂直）」「ハンドル回し
+//   してもモデルが傾かない」は、画面上で水平を保つ意味ではなく、“仮想世界を現実空間へ
+//   登録し、モデルが常に現実の重力に対して立ち続ける”＝フル AR を意味する。よって
+//   カメラ姿勢にデバイス姿勢クォータニオン q を「そのまま」用いる:
 //
-//     Pivot (親)  … TARGET に配置。重力軸(world Y)まわりの Yaw（方位）だけを担う。
-//       └ Arm (子) … ローカル X 軸まわりの Pitch（仰角）だけを担う。
-//           └ Camera (孫) … ローカル +Z 方向へ distance だけ離れて配置。常に原点
-//                            （＝TARGET）を見下ろす向き（ローカル回転は単位）。
+//     camera.quaternion = q
+//     camera.position   = TARGET − distance × forward      （forward = (0,0,-1)·q）
 //
-//   この構造では「カメラ右ベクトル＝水平」が常に保証される（Yaw も Pitch も水平軸を
-//   傾けない）ため、ロールは構造上ゼロ＝水平が絶対に崩れない。スマホのハンドル回し
-//   （ロール）は視線ベクトル f を変えないので、モデルは一切傾かない（要件1）。
-//   距離は Camera のローカル +Z 量で常に一定（要件2）。Camera は常に原点を向く（要件3）。
+//   ・q をそのまま使うのでジンバルロックも極での反転も折り返しも一切起きない
+//     （クォータニオンは全姿勢で連続）。挙動1・2の「頭上/足裏を越えると戻る」も解消。
+//   ・スマホをロール（ハンドル回し）すると q のロール成分でカメラも回り、画面上では
+//     モデルが逆回転して見える＝モデルは現実の重力に対して立ち続ける（要件1）。
+//   ・位置を TARGET から forward 方向へ distance だけ引くので、距離は常に一定（要件2）、
+//     かつカメラは常に TARGET を正面に捉える（要件3）。
+//   ・以前は「階層構造でロールを除去」していたが、それはモデルを画面に貼り付ける挙動で
+//     要件と逆だった。ロールを含むフル AR が正しい。
 //
-//   【極での180°反転の根絶】方位(Yaw)を視線ベクトル f の水平成分 atan2(f.x,f.z) から
-//   求めると、視線が真上・真下を向く極で水平成分が消え、符号反転＝方位が180°飛ぶ
-//   （床ごと反転する）。これがジンバルロックの正体。そこで方位は f からではなく
-//   デバイス姿勢クォータニオン q の「重力Y軸まわりのねじれ角 twist = 2·atan2(q.y, q.w)」
-//   から求める。twist はスマホを前後に倒す（recline）操作では一定に保たれるため、
-//   頭上・足裏の極を通過しても方位が一切飛ばない（数値検証済み）。仰角(Pitch)は
-//   視線の上下角 asin(f.y) を用いる。旋回時のみ twist が追従して方位が変わる。
-//
-//   ※ スマホをほぼ垂直に保ったままの「ハンドル回し」は、デバイス角(α/β/γ)の構造的な
-//     ジンバルロック（β≈90°でαとγが縮退）により方位回転として現れるが、Yaw/Pitch の
-//     2軸のみで構成し Roll を一切入れないため、モデルが画面内で傾くことはない。
-//
+//   ドラッグ操作は、デバイス姿勢に対する追加オービット（ローカル回転）として合成する。
+//   平滑化はクォータニオンの slerp で行う（角度分解しないので破綻しない）。
 //   モデルの正面方向はリセット時に applyModelYaw() で調整する（従来どおり）。
 // -----------------------------------------------------------------------------
 
@@ -363,7 +355,11 @@ const _Q_CORR_X = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
 // フレームごとに使い回す一時オブジェクト
 const _euler_dq   = new THREE.Euler();
 const _deviceQuat = new THREE.Quaternion();
-const _userDir    = new THREE.Vector3(); // resetView でのユーザー方向（一時）
+const _userDir    = new THREE.Vector3();   // resetView でのユーザー方向（一時）
+const _targetQuat = new THREE.Quaternion(); // フレームごとの目標カメラ姿勢（一時）
+const _dragQuat   = new THREE.Quaternion(); // ドラッグ・オービット回転（一時）
+const _dragEuler  = new THREE.Euler();      // ドラッグ角→クォータニオン変換用（一時）
+const _fwd        = new THREE.Vector3();    // カメラ前方ベクトル（一時）
 
 // alpha/beta/gamma（度単位）→ _deviceQuat（Three.js DeviceOrientationControls 準拠）
 function computeDeviceQuat(alpha, beta, gamma) {
@@ -397,85 +393,72 @@ function applyModelYaw(targetUserDir) {
 }
 
 // --- ARCameraController ------------------------------------------------------
-//   Pivot(Yaw) → Arm(Pitch) → Camera(距離) の階層を構築し、毎フレーム
-//   update() でデバイス姿勢（または起動時の基準角＋ドラッグ）から角度を解決する。
-const SMOOTH_ANGLE = 0.25; // 角度追従の滑らかさ（0=固定, 1=即時）
+//   フル AR：毎フレーム camera.quaternion = q（デバイス姿勢）にし、位置を TARGET から
+//   forward 方向へ distance だけ引く。ドラッグはローカル追加回転、平滑化は slerp。
+const SMOOTH_ANGLE = 0.25; // 姿勢 slerp の滑らかさ（0=固定, 1=即時）
 
 class ARCameraController {
-  constructor(cam, target, parent) {
+  constructor(cam, target) {
     this.camera = cam;
-
-    // 階層ノード（重力軸 Yaw → 仰角 Pitch → 距離）
-    this.pivot = new THREE.Group(); // world Y 軸まわりの Yaw（重力軸＝水平維持の要）
-    this.arm   = new THREE.Group(); // ローカル X 軸まわりの Pitch（仰角）
-    this.pivot.position.copy(target);
-    this.pivot.add(this.arm);
-    this.arm.add(cam);
-    parent.add(this.pivot);
-
-    // 連続な内部状態（前フレーム値を平滑化の基準に使う）
-    this.yaw = BASE_YAW;
-    this.pitch = BASE_PITCH;
+    this.target = target;
     this.distance = ORBIT_RADIUS;
     this.lastFy = 0; // 直近の視線 f.y（テレメトリ表示用）
 
-    // カメラは Arm のローカル +Z 方向へ distance だけ離し、原点（TARGET）を向かせる。
-    // ローカル回転は単位（=Arm の -Z を見る）。これで「常に中心を向く」が構造的に成立。
-    cam.position.set(0, 0, this.distance);
-    cam.rotation.set(0, 0, 0);
-    cam.up.set(0, 1, 0);
-  }
+    // センサー未受信時の基準姿勢（起動時の「正面 少し見下ろし」構図）。
+    this._baseQuat = new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(BASE_PITCH, BASE_YAW, 0, 'YXZ')
+    );
+    // 平滑化された現在のカメラ姿勢
+    this.smoothQuat = this._baseQuat.clone();
 
-  _wrapPi(a) {
-    if (!Number.isFinite(a)) return 0; // NaN/Infinity 混入時の無限ループ・発散を防止
-    while (a >  Math.PI) a -= 2 * Math.PI;
-    while (a < -Math.PI) a += 2 * Math.PI;
-    return a;
+    // カメラはシーングラフに属さず（親なし）、毎フレーム世界姿勢を直接代入する。
+    cam.up.set(0, 1, 0);
+    this._applyToCamera();
   }
-  // 最短角で補間（周期境界をまたいでも飛ばない）
-  _lerpAngleShort(a, b, t) { return a + this._wrapPi(b - a) * t; }
 
   // 毎フレーム更新。q: デバイス姿勢クォータニオン。opts: { hasDevice, dragYaw, dragPitch, targetDistance }
   update(q, opts) {
-    let yawTarget = this.yaw;
-    let pitchTarget = this.pitch;
-
+    // 目標姿勢：デバイスがあれば q そのもの（フル AR）、無ければ基準姿勢。
     if (opts.hasDevice) {
-      // 仰角(Pitch) = 視線の上下角 asin(f.y)。f=視線(光軸)方向。傾けに対し滑らかで、
-      // 極（真上 f.y=-1 / 真下 f.y=+1）でも値が連続。範囲は [-90°,90°]。
-      const f = _userDir.set(0, 0, -1).applyQuaternion(q);
-      this.lastFy = f.y; // テレメトリ表示用
-      pitchTarget = Math.asin(THREE.MathUtils.clamp(f.y, -1, 1));
-
-      // 方位(Yaw) = 重力Y軸まわりのねじれ角 twist = 2·atan2(q.y, q.w)。
-      // スマホを前後に倒す操作では twist が一定に保たれ、極を通過しても方位が
-      // 180°飛ばない（＝ジンバルロック反転の根絶）。旋回時のみ追従する。
-      yawTarget = 2 * Math.atan2(q.y, q.w);
+      _targetQuat.copy(q);
+      this.lastFy = _fwd.set(0, 0, -1).applyQuaternion(q).y; // テレメトリ用
+    } else {
+      _targetQuat.copy(this._baseQuat);
     }
 
-    // 平滑化（最短角補間：360°境界・周期をまたいでも飛ばない）
-    this.yaw   = this._lerpAngleShort(this.yaw,   yawTarget,   SMOOTH_ANGLE);
-    this.pitch = this._lerpAngleShort(this.pitch, pitchTarget, SMOOTH_ANGLE);
+    // ドラッグはデバイス座標系でのローカル追加回転（モデルは常に中心に保たれる）。
+    if (opts.dragYaw || opts.dragPitch) {
+      _dragEuler.set(opts.dragPitch, opts.dragYaw, 0, 'YXZ');
+      _dragQuat.setFromEuler(_dragEuler);
+      _targetQuat.multiply(_dragQuat);
+    }
 
-    // ズーム距離を滑らかに追従させ、カメラのローカル +Z 量へ反映（要件2：距離一定）
+    // 姿勢を slerp で平滑化（角度分解しないのでどの姿勢でも破綻しない）。
+    this.smoothQuat.slerp(_targetQuat, SMOOTH_ANGLE);
+
+    // ズーム距離を滑らかに追従（要件2：距離一定）。
     this.distance += (opts.targetDistance - this.distance) * ZOOM_SMOOTHING;
-    this.camera.position.set(0, 0, this.distance);
 
-    // ドラッグオフセットを加味して階層へ反映。
-    //   Pivot=Yaw（重力Y軸） / Arm=Pitch（ローカルX軸）。ロール成分は一切入れない。
-    this.pivot.rotation.set(0, this.yaw + opts.dragYaw, 0);
-    this.arm.rotation.set(this.pitch + opts.dragPitch, 0, 0);
+    this._applyToCamera();
+  }
+
+  // smoothQuat と distance からカメラの世界姿勢・位置を確定する。
+  //   camera.quaternion = 姿勢、position = TARGET − distance × forward（常に TARGET を注視）。
+  _applyToCamera() {
+    this.camera.quaternion.copy(this.smoothQuat);
+    _fwd.set(0, 0, -1).applyQuaternion(this.smoothQuat); // カメラ前方
+    this.camera.position.copy(this.target).addScaledVector(_fwd, -this.distance);
   }
 
   // ズーム距離を即時設定（リセット時に滑らか追従を待たず確定させる）
   setDistance(d) {
     this.distance = d;
-    this.camera.position.set(0, 0, d);
+    this._applyToCamera();
   }
 }
 
-// コントローラ実体（カメラを階層へ組み込む）。以降カメラ姿勢はこれが一手に握る。
-const cameraController = new ARCameraController(camera, TARGET, scene);
+// コントローラ実体。以降カメラの姿勢・位置はこれが一手に握る。
+const cameraController = new ARCameraController(camera, TARGET);
 
 // 毎フレーム呼ばれるカメラ姿勢更新（デバイス姿勢＋ドラッグ＋ズームを集約）
 function updateCameraPose() {
@@ -498,11 +481,10 @@ function renderCameraDebug() {
   if (!statusEl || !isSwayDebug()) return;
   const a = getOrientationAngles();
   const c = cameraController;
-  const deg = (r) => Math.round(r * 180 / Math.PI);
   statusEl.classList.remove('hidden');
   statusEl.textContent =
     `α${Math.round(a.alpha)} β${Math.round(a.beta)} γ${Math.round(a.gamma)} | ` +
-    `f.y ${c.lastFy.toFixed(2)} | yaw ${deg(c.yaw)} pitch ${deg(c.pitch)}`;
+    `f.y ${c.lastFy.toFixed(2)} | dist ${Math.round(c.distance)}`;
 }
 
 // -----------------------------------------------------------------------------
