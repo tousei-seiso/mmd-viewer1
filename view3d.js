@@ -140,10 +140,6 @@ class LightController {
     this.radius = radius;          // 公転半径 r（固定）
     this.lightMode = 'world';      // 既定は世界固定モード（太陽光）
 
-    // デバッグ：ライトの位置と向きが見えます
-    const helper = new THREE.DirectionalLightHelper(lightController.dirLight, 5);
-    scene.add(helper);
-
     // 指向性光源の球面パラメータ（度）
     this.azimuth = defaults.directional.azimuth;     // 方位角 0–360°
     this.elevation = defaults.directional.elevation; // 仰角 0–90°
@@ -165,6 +161,10 @@ class LightController {
     // DirectionalLight は target（既定は原点）へ向かう。target をシーンに追加し、
     // 位置を TARGET（モデル中心）へ固定して常にモデルを照らす。
     this.scene.add(this.dirLight.target);
+
+    // デバッグ：ライトの位置と向きが見えます
+    const helper = new THREE.DirectionalLightHelper(lightController.dirLight, 5);
+    scene.add(helper);
 
     // 環境光（全体を柔らかく底上げ）
     this.ambient = new THREE.AmbientLight(
@@ -215,6 +215,7 @@ class LightController {
     this.dirLight.position.copy(this.target).add(offset);
     this.dirLight.target.position.copy(this.target);
     this.dirLight.target.updateMatrixWorld();
+    if (this.helper) this.helper.update(); // ← これが追従描画に必要です
   }
 
   // --- UI から呼ばれる個別セッター（変更を即時反映） ---------------------------
