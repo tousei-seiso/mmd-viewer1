@@ -140,6 +140,10 @@ class LightController {
     this.radius = radius;          // 公転半径 r（固定）
     this.lightMode = 'world';      // 既定は世界固定モード（太陽光）
 
+    // デバッグ：ライトの位置と向きが見えます
+    const helper = new THREE.DirectionalLightHelper(lightController.dirLight, 5);
+    scene.add(helper);
+
     // 指向性光源の球面パラメータ（度）
     this.azimuth = defaults.directional.azimuth;     // 方位角 0–360°
     this.elevation = defaults.directional.elevation; // 仰角 0–90°
