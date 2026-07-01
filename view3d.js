@@ -28,7 +28,7 @@ import {
   getOrientationAngles,
   renderSwayDebug,
   isSwayDebug,
-} from './sensor.js?v=8';
+} from './sensor.js?v=9';
 
 // 楽曲の読み込み・再生制御・シークバー（audio.js）
 import {
@@ -37,7 +37,7 @@ import {
   updateSeekBar,
   onAudioEnded,
   isSeekScrubbing,
-} from './audio.js?v=8';
+} from './audio.js?v=9';
 
 // -----------------------------------------------------------------------------
 // 設定値
@@ -176,9 +176,12 @@ class LightController {
     // 使い回す一時オブジェクト（毎フレーム new しない）
     this._offset = new THREE.Vector3();
     this._modelQuat = new THREE.Quaternion();
+    this._modelPos = new THREE.Vector3();   // 検知ノードのワールド位置（移動追従用）
+    this._followCenter = new THREE.Vector3(); // 追従時の照射先＝公転中心（一時）
     this._euler = new THREE.Euler();       // ワールド回転 → YXZ Euler 変換用
     this._yawEuler = new THREE.Euler();     // Yaw のみの Euler
     this._yawQuat = new THREE.Quaternion(); // Yaw のみの Quaternion
+    this._debugPos = null;                  // 直近で検知した水平位置 {x,z}（デバッグ用）
 
     // モデル追従モードで「実際に回転しているノード」をキャッシュする。
     //   MMD モデルは SkinnedMesh で、ダンス中の向きの変化はスケルトン内のボーン
@@ -250,25 +253,36 @@ class LightController {
   update(model) {
     const offset = this._computeOffset();
 
+    // 公転中心＝照射先。既定はワールド固定の TARGET（モデル中心の高さ）。
+    // モデル追従モードでは、検知ノードのワールド位置に合わせて水平（X/Z）に移動させる。
+    const center = this._followCenter.copy(this.target);
+
     // モデル追従モード：モデルのワールド回転から Yaw（Y 軸回転）成分のみを抽出し、
     // その回転で offset を回して水平に追従させる。ワールド回転をそのまま適用すると
     // Pitch/Roll まで反映されて仰角（elevation）が傾いてしまうため、Yaw のみに限定する。
+    // さらに、検知ノードのワールド位置に合わせて公転中心を水平移動させ、モデルが
+    // 床の上を移動しても光源がついていくようにする（高さ TARGET.y は固定）。
     if (this.lightMode === 'model' && model) {
-      // モデル自身ではなく「実際に回転するノード（センター等のボーン）」の world 回転を使う。
+      // モデル自身ではなく「実際に回転するノード（センター等のボーン）」の world 姿勢を使う。
       const source = this._resolveRotationSource(model);
       source.getWorldQuaternion(this._modelQuat);
+      source.getWorldPosition(this._modelPos);
       // YXZ 順の Euler に変換し、Y 成分（Yaw）だけを取り出した Quaternion を作る。
       const euler = this._euler.setFromQuaternion(this._modelQuat, 'YXZ');
       this._debugYaw = euler.y; // デバッグ用に検知した Yaw を保持
       const yawQuat = this._yawQuat.setFromEuler(this._yawEuler.set(0, euler.y, 0));
       offset.applyQuaternion(yawQuat);
+      // 水平位置のみ追従（高さは注視点の高さを維持）。
+      center.set(this._modelPos.x, this.target.y, this._modelPos.z);
+      this._debugPos = { x: this._modelPos.x, z: this._modelPos.z };
     } else {
       this._debugYaw = null; // 世界固定モード or モデル無し
+      this._debugPos = null;
     }
 
-    // 照射先（target）はモデル中心へ固定。ライト位置はその周囲 offset の点。
-    this.dirLight.position.copy(this.target).add(offset);
-    this.dirLight.target.position.copy(this.target);
+    // 照射先（target）は公転中心へ。ライト位置はその周囲 offset の点。
+    this.dirLight.position.copy(center).add(offset);
+    this.dirLight.target.position.copy(center);
     //this.dirLight.target.updateMatrixWorld();
     // 行列の強制更新と影の再計算トリガー
     this.dirLight.updateMatrixWorld(); // <--- 変更・追加
@@ -322,6 +336,7 @@ class LightController {
       mode: this.lightMode,
       node: this._rotSource ? (this._rotSource.name || this._rotSource.type || 'model') : '-',
       yawDeg: this._debugYaw == null ? null : THREE.MathUtils.radToDeg(this._debugYaw),
+      pos: this._debugPos, // {x,z} または null
     };
   }
 }
@@ -702,7 +717,8 @@ function renderCameraDebug() {
   // 光源追従の切り分け情報：検知ノードと Yaw（度）。モデルを回して yaw が動くか確認する。
   const li = lightController.getDebugInfo();
   const light = li.mode === 'model'
-    ? `light:model node=${li.node} yaw=${li.yawDeg == null ? '-' : Math.round(li.yawDeg) + '°'}`
+    ? `light:model node=${li.node} yaw=${li.yawDeg == null ? '-' : Math.round(li.yawDeg) + '°'}` +
+      (li.pos ? ` pos(${li.pos.x.toFixed(1)},${li.pos.z.toFixed(1)})` : '')
     : 'light:world';
   statusEl.textContent = statusEl.textContent ? `${statusEl.textContent} | ${cam} | ${light}` : `${cam} | ${light}`;
 }
