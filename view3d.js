@@ -162,9 +162,9 @@ class LightController {
     // 位置を TARGET（モデル中心）へ固定して常にモデルを照らす。
     this.scene.add(this.dirLight.target);
 
-    // デバッグ：ライトの位置と向きが見えます
-    const helper = new THREE.DirectionalLightHelper(lightController.dirLight, 5);
-    scene.add(helper);
+    // 2. ヘルパーの作成（クラス内部で完結させる）
+    this.helper = new THREE.DirectionalLightHelper(this.dirLight, 5); // <--- 変更・追加
+    this.scene.add(this.helper); // <--- 変更・追加
 
     // 環境光（全体を柔らかく底上げ）
     this.ambient = new THREE.AmbientLight(
@@ -214,8 +214,16 @@ class LightController {
     // 照射先（target）はモデル中心へ固定。ライト位置はその周囲 offset の点。
     this.dirLight.position.copy(this.target).add(offset);
     this.dirLight.target.position.copy(this.target);
-    this.dirLight.target.updateMatrixWorld();
-    if (this.helper) this.helper.update(); // ← これが追従描画に必要です
+    //this.dirLight.target.updateMatrixWorld();
+    // 行列の強制更新と影の再計算トリガー
+    this.dirLight.updateMatrixWorld(); // <--- 変更・追加
+    this.dirLight.target.updateMatrixWorld(); // <--- 変更・追加
+    if (this.dirLight.shadow) { // <--- 変更・追加
+        this.dirLight.shadow.camera.updateProjectionMatrix(); // <--- 変更・追加
+    } // <--- 変更・追加
+    
+    // ヘルパーの更新
+    if (this.helper) this.helper.update(); // <--- 変更・追加
   }
 
   // --- UI から呼ばれる個別セッター（変更を即時反映） ---------------------------
