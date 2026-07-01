@@ -549,7 +549,9 @@ body {
    ------------------------------------------------------------------------- */
 #light-panel {
   position: fixed;
-  top: calc(var(--safe-top) + var(--btn-step) * 11);
+  /* 画面上端付近に寄せて縦の表示領域を最大化する（下端はみ出し防止）。
+     アイコン列の左隣に開く（right はボタン 1 段分の逃がし）。 */
+  top: var(--safe-top);
   right: calc(var(--safe-right) + var(--btn-step));
   z-index: 22;
   display: flex;
@@ -557,6 +559,9 @@ body {
   gap: 16px;
   padding: 12px 14px;
   width: min(260px, 78vw);
+  /* 万一内容が縦に長くても画面内に必ず収める（超過分だけスクロール可能に）。 */
+  max-height: calc(100vh - var(--safe-top) - 12px);
+  overflow-y: auto;
   background: rgba(24, 28, 36, 0.96);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 12px;
