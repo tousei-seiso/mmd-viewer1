@@ -554,7 +554,7 @@ body {
   z-index: 22;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 16px;
   padding: 12px 14px;
   width: min(260px, 78vw);
   background: rgba(24, 28, 36, 0.96);
