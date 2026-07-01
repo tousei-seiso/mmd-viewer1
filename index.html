@@ -68,6 +68,10 @@
        リアルタイム表示し、その中にモデルを重ねて表示する（view3d.js の setArEnabled）。 -->
   <button id="ar-toggle" type="button" title="AR（背面カメラ）背景をON/OFF" aria-pressed="false">📹</button>
 
+  <!-- 光源設定パネルを開く電球アイコン（AR アイコンの下）。クリックでライトパネルを開閉。
+       指向性光源（太陽）と環境光の色・強度・向き、および光の追従モードを調整する。 -->
+  <button id="light-toggle" type="button" title="光源（ライト）を調整" aria-expanded="false">💡</button>
+
   <!-- AR 背景用のカメラ映像。THREE.VideoTexture のソースにするためだけの要素で、
        画面には表示しない（style.css で不可視化）。iOS Safari はテクスチャ化のため
        display:none を嫌うので、画面外へ寄せて事実上見えないようにしている。
@@ -83,6 +87,48 @@
     <label class="color-row">
       <span>床</span>
       <input type="color" id="floor-color" value="#335577" />
+    </label>
+  </div>
+
+  <!-- 光源設定パネル（💡）。指向性光源（太陽）と環境光を調整する。
+       各コントロールは ui.js の setupLightPanel() で LightController(view3d.js) に配線される。 -->
+  <div id="light-panel" class="hidden">
+    <div class="light-section-title">指向性光源（太陽）</div>
+    <label class="light-row">
+      <span>方位角</span>
+      <input type="range" id="light-azimuth" min="0" max="360" step="1" value="45" />
+      <output id="light-azimuth-val">45°</output>
+    </label>
+    <label class="light-row">
+      <span>仰角</span>
+      <input type="range" id="light-elevation" min="0" max="90" step="1" value="45" />
+      <output id="light-elevation-val">45°</output>
+    </label>
+    <label class="light-row">
+      <span>強度</span>
+      <input type="range" id="light-dir-intensity" min="0" max="3" step="0.05" value="1.2" />
+      <output id="light-dir-intensity-val">1.20</output>
+    </label>
+    <label class="light-row">
+      <span>色</span>
+      <input type="color" id="light-dir-color" value="#ffffff" />
+    </label>
+
+    <div class="light-section-title">環境光</div>
+    <label class="light-row">
+      <span>強度</span>
+      <input type="range" id="light-amb-intensity" min="0" max="3" step="0.05" value="0.6" />
+      <output id="light-amb-intensity-val">0.60</output>
+    </label>
+    <label class="light-row">
+      <span>色</span>
+      <input type="color" id="light-amb-color" value="#ffffff" />
+    </label>
+
+    <div class="light-section-title">ライティングモード</div>
+    <label class="light-row light-mode-row">
+      <span id="light-mode-label">世界固定（太陽光）</span>
+      <input type="checkbox" id="light-mode-toggle" role="switch" aria-checked="false" />
     </label>
   </div>
 

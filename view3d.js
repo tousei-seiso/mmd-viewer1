@@ -101,21 +101,143 @@ container.appendChild(renderer.domElement);
 // ライト・地面（ステージ）
 // -----------------------------------------------------------------------------
 
-// 環境光（全体を柔らかく底上げ）
-scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+// ライティングの初期設定（テーマ：晴天の昼間）。
+//   ・指向性光源（太陽）: 方位角45°・仰角45°から、白色・やや強め(1.2)で差し込む。
+//   ・環境光: 全体を柔らかく底上げする補助光（白色・0.6）。
+const LIGHT_DEFAULTS = {
+  directional: { azimuth: 45, elevation: 45, intensity: 1.2, color: 0xffffff },
+  ambient: { intensity: 0.6, color: 0xffffff },
+};
 
-// 平行光源（太陽光のような主光源。影を落とす）
-const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
-dirLight.position.set(10, 30, 20);
-dirLight.castShadow = true;
-dirLight.shadow.mapSize.set(1024, 1024);
-dirLight.shadow.camera.near = 1;
-dirLight.shadow.camera.far = 100;
-dirLight.shadow.camera.left = -25;
-dirLight.shadow.camera.right = 25;
-dirLight.shadow.camera.top = 25;
-dirLight.shadow.camera.bottom = -25;
-scene.add(dirLight);
+// 指向性光源の公転半径（TARGET からライト位置までの距離）。方位角・仰角と合わせて
+// Spherical 座標変換で position を決める（LightController._computeOffset 参照）。
+const LIGHT_RADIUS = 10.0;
+
+// -----------------------------------------------------------------------------
+// LightController ―― AR ビューワーの光源設定を総合的に制御する
+//   指向性光源（DirectionalLight）と環境光（AmbientLight）を 1 つにまとめ、UI からの
+//   パラメータ変更（方位角・仰角・強度・色・モード）を即時反映する。既存のレンダリング
+//   ループ・IK モーション制御には一切干渉しない（読むだけ／自分のライトしか書かない）。
+//
+//   ■ 指向性光源の位置（Spherical 座標変換, r = LIGHT_RADIUS 固定）
+//       x = r * cos(β) * sin(α)
+//       y = r * sin(β)
+//       z = r * cos(β) * cos(α)
+//     α = 方位角(0–360°), β = 仰角(0–90°)。この offset を注視点(TARGET＝モデル中心)へ
+//     加えた点をライト位置とし、target を常に TARGET に固定してモデルを照らす。
+//
+//   ■ ライティングモード（lightMode）
+//     'world'（既定）: offset をワールド空間へそのまま適用＝光源はワールドに固定され、
+//                      太陽光のように「モデルが回っても光の向きは変わらない」。
+//     'model'        : offset をモデルのワールド回転（＝Yaw のみ）で回してから適用＝
+//                      光源はモデル正面に相対配置され、モデルが向きを変えても常に
+//                      正面から光が当たる（モデル追従）。モデルが無ければワールド固定に退避。
+// -----------------------------------------------------------------------------
+class LightController {
+  constructor(scene, target, defaults, radius) {
+    this.scene = scene;
+    this.target = target;          // 注視点＝モデル中心（TARGET, Vector3）。ライトの照射先。
+    this.radius = radius;          // 公転半径 r（固定）
+    this.lightMode = 'world';      // 既定は世界固定モード（太陽光）
+
+    // 指向性光源の球面パラメータ（度）
+    this.azimuth = defaults.directional.azimuth;     // 方位角 0–360°
+    this.elevation = defaults.directional.elevation; // 仰角 0–90°
+
+    // 指向性光源（主光源。影を落とす）
+    this.dirLight = new THREE.DirectionalLight(
+      defaults.directional.color,
+      defaults.directional.intensity
+    );
+    this.dirLight.castShadow = true;
+    this.dirLight.shadow.mapSize.set(1024, 1024);
+    this.dirLight.shadow.camera.near = 1;
+    this.dirLight.shadow.camera.far = 100;
+    this.dirLight.shadow.camera.left = -25;
+    this.dirLight.shadow.camera.right = 25;
+    this.dirLight.shadow.camera.top = 25;
+    this.dirLight.shadow.camera.bottom = -25;
+    this.scene.add(this.dirLight);
+    // DirectionalLight は target（既定は原点）へ向かう。target をシーンに追加し、
+    // 位置を TARGET（モデル中心）へ固定して常にモデルを照らす。
+    this.scene.add(this.dirLight.target);
+
+    // 環境光（全体を柔らかく底上げ）
+    this.ambient = new THREE.AmbientLight(
+      defaults.ambient.color,
+      defaults.ambient.intensity
+    );
+    this.scene.add(this.ambient);
+
+    // 使い回す一時オブジェクト（毎フレーム new しない）
+    this._offset = new THREE.Vector3();
+    this._modelQuat = new THREE.Quaternion();
+
+    this.update(); // 初期位置を確定
+  }
+
+  _clampDeg(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+  // 球面パラメータ（方位角 α・仰角 β）から TARGET 基準のオフセットベクトルを求める。
+  _computeOffset() {
+    const a = THREE.MathUtils.degToRad(this.azimuth);
+    const b = THREE.MathUtils.degToRad(this.elevation);
+    const r = this.radius;
+    return this._offset.set(
+      r * Math.cos(b) * Math.sin(a),
+      r * Math.sin(b),
+      r * Math.cos(b) * Math.cos(a)
+    );
+  }
+
+  // 指向性光源の位置とターゲットを更新する。
+  //   毎フレーム animate() から呼ばれ、モデル追従モードではモデルの向きに追従させる。
+  //   引数 model は現在のモデル（currentModel）。省略時はワールド固定として扱う。
+  update(model) {
+    const offset = this._computeOffset();
+
+    // モデル追従モード：offset をモデルのワールド回転で回し、モデル正面に相対配置する。
+    // モデルは Yaw（Y 軸回転）しか持たないため、これで仰角を保ったまま水平に追従する。
+    if (this.lightMode === 'model' && model) {
+      model.getWorldQuaternion(this._modelQuat);
+      offset.applyQuaternion(this._modelQuat);
+    }
+
+    // 照射先（target）はモデル中心へ固定。ライト位置はその周囲 offset の点。
+    this.dirLight.position.copy(this.target).add(offset);
+    this.dirLight.target.position.copy(this.target);
+    this.dirLight.target.updateMatrixWorld();
+  }
+
+  // --- UI から呼ばれる個別セッター（変更を即時反映） ---------------------------
+  setAzimuth(deg)   { this.azimuth = this._clampDeg(deg, 0, 360); this.update(currentModel); }
+  setElevation(deg) { this.elevation = this._clampDeg(deg, 0, 90); this.update(currentModel); }
+  setDirIntensity(v) { this.dirLight.intensity = Math.max(0, v); }
+  setDirColor(value) { this.dirLight.color.set(value); }
+  setAmbientIntensity(v) { this.ambient.intensity = Math.max(0, v); }
+  setAmbientColor(value) { this.ambient.color.set(value); }
+  setLightMode(mode) {
+    // 'world'（世界固定）/ 'model'（モデル追従）のみ受け付ける。
+    this.lightMode = mode === 'model' ? 'model' : 'world';
+    this.update(currentModel);
+  }
+
+  // 現在の設定を UI 初期化用に返す（副作用なし）。
+  getState() {
+    return {
+      azimuth: this.azimuth,
+      elevation: this.elevation,
+      dirIntensity: this.dirLight.intensity,
+      dirColor: '#' + this.dirLight.color.getHexString(),
+      ambientIntensity: this.ambient.intensity,
+      ambientColor: '#' + this.ambient.color.getHexString(),
+      lightMode: this.lightMode,
+    };
+  }
+}
+
+// コントローラ実体。以降シーンの光源はこれが一手に握る。
+const lightController = new LightController(scene, TARGET, LIGHT_DEFAULTS, LIGHT_RADIUS);
 
 // 地面（影を受けるステージ床）
 const ground = new THREE.Mesh(
@@ -695,6 +817,21 @@ export function applyBgColor(value) {
 export function applyFloorColor(value) {
   if (ground && ground.material && ground.material.color) ground.material.color.set(value);
 }
+
+// -----------------------------------------------------------------------------
+// 光源設定（💡 ライトパネル）
+//   UI（ui.js）のスライダー・カラーピッカー・モード切替から渡された値を LightController
+//   へ即時反映する。実処理はすべて lightController が持ち、ここは薄い橋渡しに徹する。
+//   既存のレンダリング／IK モーション制御には一切干渉しない（自分の光源だけを触る）。
+// -----------------------------------------------------------------------------
+export function setLightAzimuth(deg)        { lightController.setAzimuth(deg); }
+export function setLightElevation(deg)      { lightController.setElevation(deg); }
+export function setLightDirIntensity(v)     { lightController.setDirIntensity(v); }
+export function setLightDirColor(value)     { lightController.setDirColor(value); }
+export function setLightAmbientIntensity(v) { lightController.setAmbientIntensity(v); }
+export function setLightAmbientColor(value) { lightController.setAmbientColor(value); }
+export function setLightMode(mode)          { lightController.setLightMode(mode); }
+export function getLightState()             { return lightController.getState(); }
 
 // -----------------------------------------------------------------------------
 // AR（背面カメラ）背景モード（📹 アイコン）
@@ -1374,6 +1511,11 @@ function animate() {
 
   // ---- カメラ姿勢更新 ---------------------------------------------------------
   updateCameraPose();
+
+  // ---- 光源更新 ---------------------------------------------------------------
+  //   世界固定モードでは同じ位置を再確定するだけ（実質不変）、モデル追従モードでは
+  //   モデルの向きに合わせて指向性光源の位置を追従させる。トリグ数回のみで軽量。
+  lightController.update(currentModel);
 
   // --- ダンス（VMD）と音源の強制同期 -------------------------------------------
   //   スマホで FPS が落ちても音と踊りがズレないよう、経過時間ではなく「音源の再生位置」

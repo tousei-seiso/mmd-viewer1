@@ -36,6 +36,14 @@ import {
   takeScreenshot,
   setArEnabled,
   isArEnabled,
+  setLightAzimuth,
+  setLightElevation,
+  setLightDirIntensity,
+  setLightDirColor,
+  setLightAmbientIntensity,
+  setLightAmbientColor,
+  setLightMode,
+  getLightState,
 } from './view3d.js?v=7';
 
 // -----------------------------------------------------------------------------
@@ -409,6 +417,100 @@ function setupArToggle() {
 }
 
 // -----------------------------------------------------------------------------
+// 光源設定パネル（💡 アイコン）
+//   指向性光源（太陽）と環境光の色・強度・向き、および光の追従モードを調整する。
+//   各スライダー／カラーピッカー／モードスイッチを view3d.js の LightController 用
+//   setter へ 'input' で即時反映する。パネルの初期値は getLightState() で実際の
+//   初期光源設定に合わせる（HTML の value とズレても LightController が真実の値）。
+//   パネルの開閉はカラーパネルと同じ流儀（外側クリックで閉じる）。
+// -----------------------------------------------------------------------------
+function setupLightPanel() {
+  const lightBtn = document.getElementById('light-toggle');
+  const lightPanel = document.getElementById('light-panel');
+  if (!lightBtn || !lightPanel) return;
+
+  // 各コントロールと数値表示
+  const azimuth = document.getElementById('light-azimuth');
+  const azimuthVal = document.getElementById('light-azimuth-val');
+  const elevation = document.getElementById('light-elevation');
+  const elevationVal = document.getElementById('light-elevation-val');
+  const dirIntensity = document.getElementById('light-dir-intensity');
+  const dirIntensityVal = document.getElementById('light-dir-intensity-val');
+  const dirColor = document.getElementById('light-dir-color');
+  const ambIntensity = document.getElementById('light-amb-intensity');
+  const ambIntensityVal = document.getElementById('light-amb-intensity-val');
+  const ambColor = document.getElementById('light-amb-color');
+  const modeToggle = document.getElementById('light-mode-toggle');
+  const modeLabel = document.getElementById('light-mode-label');
+
+  // 実際の初期光源設定へ UI を同期（HTML の value に頼らず真実の値へ合わせる）
+  const s = getLightState();
+  if (azimuth) { azimuth.value = String(Math.round(s.azimuth)); if (azimuthVal) azimuthVal.textContent = `${Math.round(s.azimuth)}°`; }
+  if (elevation) { elevation.value = String(Math.round(s.elevation)); if (elevationVal) elevationVal.textContent = `${Math.round(s.elevation)}°`; }
+  if (dirIntensity) { dirIntensity.value = String(s.dirIntensity); if (dirIntensityVal) dirIntensityVal.textContent = s.dirIntensity.toFixed(2); }
+  if (dirColor) dirColor.value = s.dirColor;
+  if (ambIntensity) { ambIntensity.value = String(s.ambientIntensity); if (ambIntensityVal) ambIntensityVal.textContent = s.ambientIntensity.toFixed(2); }
+  if (ambColor) ambColor.value = s.ambientColor;
+
+  function updateModeLabel(isModel) {
+    if (modeLabel) modeLabel.textContent = isModel ? 'モデル追従' : '世界固定（太陽光）';
+    modeToggle?.setAttribute('aria-checked', String(isModel));
+  }
+  if (modeToggle) {
+    const isModel = s.lightMode === 'model';
+    modeToggle.checked = isModel;
+    updateModeLabel(isModel);
+  }
+
+  // 'input' で即時反映（スライダーのドラッグ中もリアルタイムに光が変わる）
+  azimuth?.addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    if (azimuthVal) azimuthVal.textContent = `${Math.round(v)}°`;
+    setLightAzimuth(v);
+  });
+  elevation?.addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    if (elevationVal) elevationVal.textContent = `${Math.round(v)}°`;
+    setLightElevation(v);
+  });
+  dirIntensity?.addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    if (dirIntensityVal) dirIntensityVal.textContent = v.toFixed(2);
+    setLightDirIntensity(v);
+  });
+  dirColor?.addEventListener('input', (e) => setLightDirColor(e.target.value));
+  ambIntensity?.addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    if (ambIntensityVal) ambIntensityVal.textContent = v.toFixed(2);
+    setLightAmbientIntensity(v);
+  });
+  ambColor?.addEventListener('input', (e) => setLightAmbientColor(e.target.value));
+  modeToggle?.addEventListener('change', (e) => {
+    const isModel = e.target.checked;
+    updateModeLabel(isModel);
+    setLightMode(isModel ? 'model' : 'world');
+  });
+
+  // パネル開閉（カラーパネルと同じ流儀：外側クリックで閉じる）
+  function closeLightPanel() {
+    lightPanel.classList.add('hidden');
+    lightBtn.setAttribute('aria-expanded', 'false');
+  }
+  function openLightPanel() {
+    lightPanel.classList.remove('hidden');
+    lightBtn.setAttribute('aria-expanded', 'true');
+  }
+  lightBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (lightPanel.classList.contains('hidden')) openLightPanel();
+    else closeLightPanel();
+  });
+  // パネル内のクリックは伝播させない（外側クリック判定に巻き込まれない）
+  lightPanel.addEventListener('click', (e) => e.stopPropagation());
+  window.addEventListener('click', () => closeLightPanel());
+}
+
+// -----------------------------------------------------------------------------
 // 初期化（エントリーポイントから呼ぶ）。各 UI の DOM 取得・イベント配線をまとめる。
 // -----------------------------------------------------------------------------
 export function initUI() {
@@ -420,4 +522,5 @@ export function initUI() {
   setupMotionDialog();
   setupPhysicsToggle();
   setupArToggle();
+  setupLightPanel();
 }
