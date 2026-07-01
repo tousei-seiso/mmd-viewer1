@@ -72,6 +72,10 @@
        指向性光源（太陽）と環境光の色・強度・向き、および光の追従モードを調整する。 -->
   <button id="light-toggle" type="button" title="光源（ライト）を調整" aria-expanded="false">💡</button>
 
+  <!-- 光源ヘルパー（DirectionalLightHelper）の表示 ON/OFF トグル（電球アイコンの下）。
+       光源の位置・向きを線で可視化し、モデル追従で光源が回っているか目視確認するためのもの。 -->
+  <button id="light-helper-toggle" type="button" title="光源ヘルパー（向き可視化）をON/OFF" aria-pressed="true">🔦</button>
+
   <!-- AR 背景用のカメラ映像。THREE.VideoTexture のソースにするためだけの要素で、
        画面には表示しない（style.css で不可視化）。iOS Safari はテクスチャ化のため
        display:none を嫌うので、画面外へ寄せて事実上見えないようにしている。
@@ -165,6 +169,6 @@
   </div>
 
   <!-- ?v= はキャッシュ破棄用。更新時に番号を上げると確実に最新JSが読み込まれる。 -->
-  <script type="module" src="main.js?v=7"></script>
+  <script type="module" src="main.js?v=8"></script>
 </body>
 </html>

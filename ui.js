@@ -44,7 +44,9 @@ import {
   setLightAmbientColor,
   setLightMode,
   getLightState,
-} from './view3d.js?v=7';
+  toggleLightHelper,
+  isLightHelperVisible,
+} from './view3d.js?v=8';
 
 // -----------------------------------------------------------------------------
 // 画面の向き固定トグル（🔓⇄🔒）
@@ -417,6 +419,29 @@ function setupArToggle() {
 }
 
 // -----------------------------------------------------------------------------
+// 光源ヘルパー表示トグル（🔦 アイコン）
+//   DirectionalLightHelper（光源の位置・向きを示す線）の表示 ON/OFF を切り替える。
+//   モデル追従モードで「光源が実際に回っているか」を目視確認するためのデバッグ用アイコン。
+// -----------------------------------------------------------------------------
+function setupLightHelperToggle() {
+  const btn = document.getElementById('light-helper-toggle');
+  if (!btn) return;
+
+  function updateButton() {
+    const on = isLightHelperVisible();
+    btn.setAttribute('aria-pressed', String(on));
+    btn.title = on ? '光源ヘルパー：ON（タップでOFF）' : '光源ヘルパー：OFF（タップでON）';
+  }
+  updateButton(); // HTML の初期状態（表示ON）へ同期
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleLightHelper();
+    updateButton();
+  });
+}
+
+// -----------------------------------------------------------------------------
 // 光源設定パネル（💡 アイコン）
 //   指向性光源（太陽）と環境光の色・強度・向き、および光の追従モードを調整する。
 //   各スライダー／カラーピッカー／モードスイッチを view3d.js の LightController 用
@@ -523,4 +548,5 @@ export function initUI() {
   setupPhysicsToggle();
   setupArToggle();
   setupLightPanel();
+  setupLightHelperToggle();
 }

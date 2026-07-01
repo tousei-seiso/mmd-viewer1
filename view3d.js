@@ -28,7 +28,7 @@ import {
   getOrientationAngles,
   renderSwayDebug,
   isSwayDebug,
-} from './sensor.js?v=7';
+} from './sensor.js?v=8';
 
 // 楽曲の読み込み・再生制御・シークバー（audio.js）
 import {
@@ -37,7 +37,7 @@ import {
   updateSeekBar,
   onAudioEnded,
   isSeekScrubbing,
-} from './audio.js?v=7';
+} from './audio.js?v=8';
 
 // -----------------------------------------------------------------------------
 // 設定値
@@ -176,11 +176,61 @@ class LightController {
     // 使い回す一時オブジェクト（毎フレーム new しない）
     this._offset = new THREE.Vector3();
     this._modelQuat = new THREE.Quaternion();
+    this._euler = new THREE.Euler();       // ワールド回転 → YXZ Euler 変換用
+    this._yawEuler = new THREE.Euler();     // Yaw のみの Euler
+    this._yawQuat = new THREE.Quaternion(); // Yaw のみの Quaternion
+
+    // モデル追従モードで「実際に回転しているノード」をキャッシュする。
+    //   MMD モデルは SkinnedMesh で、ダンス中の向きの変化はスケルトン内のボーン
+    //   （センター等）で起きる。SkinnedMesh 自身の quaternion は回らないため、
+    //   currentModel を getWorldQuaternion しても回転を検知できない（＝光源が追従しない）。
+    //   そこで回転を担うルート／センターボーンを探し、その world 回転を採用する。
+    this._rotSource = null;    // 検知した回転ノード（ボーン or モデル）
+    this._rotSourceFor = null; // そのノードを解決した対象モデル（キャッシュキー）
+    this._debugYaw = null;     // 直近フレームで検知した Yaw（ラジアン, デバッグ用）
 
     this.update(); // 初期位置を確定
   }
 
   _clampDeg(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+  // モデルの中から「実際に回転するノード」を解決する（毎フレーム探索しないようキャッシュ）。
+  //   1. モデル自身／子孫から SkinnedMesh（スケルトンあり）を探す。
+  //   2. スケルトンがあれば、向きを担う代表ボーンを優先順で探す
+  //      （センター → グルーブ → 全ての親 → ルートボーン bones[0]）。
+  //      getWorldQuaternion はそのボーンの祖先回転（＝applyModelYaw によるモデル自身の
+  //      Yaw も含む）をすべて累積するため、ダンスのボーン回転とモデル回転の両方を拾える。
+  //   3. スケルトンが無ければモデル自身を返す（applyModelYaw の回転だけは拾える）。
+  _resolveRotationSource(model) {
+    if (!model) return null;
+    if (this._rotSourceFor === model && this._rotSource) return this._rotSource;
+
+    let skinned = model.isSkinnedMesh ? model : null;
+    if (!skinned) {
+      model.traverse((o) => { if (!skinned && o.isSkinnedMesh && o.skeleton) skinned = o; });
+    }
+
+    let node = null;
+    if (skinned && skinned.skeleton && skinned.skeleton.bones.length) {
+      const bones = skinned.skeleton.bones;
+      const priority = ['センター', 'center', 'グルーブ', 'groove', '全ての親', 'root'];
+      for (const key of priority) {
+        const lower = key.toLowerCase();
+        const found = bones.find((b) => {
+          const n = b.name || '';
+          return n.includes(key) || n.toLowerCase().includes(lower);
+        });
+        if (found) { node = found; break; }
+      }
+      if (!node) node = bones[0]; // 代表ボーンが見つからなければルートボーン
+    }
+    if (!node) node = model; // ボーンが無ければモデル自身
+
+    this._rotSource = node;
+    this._rotSourceFor = model;
+    console.log(`[LightController] 回転検知ノード: ${node.name || node.type || '(model)'}`);
+    return node;
+  }
 
   // 球面パラメータ（方位角 α・仰角 β）から TARGET 基準のオフセットベクトルを求める。
   _computeOffset() {
@@ -204,11 +254,16 @@ class LightController {
     // その回転で offset を回して水平に追従させる。ワールド回転をそのまま適用すると
     // Pitch/Roll まで反映されて仰角（elevation）が傾いてしまうため、Yaw のみに限定する。
     if (this.lightMode === 'model' && model) {
-      model.getWorldQuaternion(this._modelQuat);
+      // モデル自身ではなく「実際に回転するノード（センター等のボーン）」の world 回転を使う。
+      const source = this._resolveRotationSource(model);
+      source.getWorldQuaternion(this._modelQuat);
       // YXZ 順の Euler に変換し、Y 成分（Yaw）だけを取り出した Quaternion を作る。
-      const euler = new THREE.Euler().setFromQuaternion(this._modelQuat, 'YXZ');
-      const yawQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, euler.y, 0));
+      const euler = this._euler.setFromQuaternion(this._modelQuat, 'YXZ');
+      this._debugYaw = euler.y; // デバッグ用に検知した Yaw を保持
+      const yawQuat = this._yawQuat.setFromEuler(this._yawEuler.set(0, euler.y, 0));
       offset.applyQuaternion(yawQuat);
+    } else {
+      this._debugYaw = null; // 世界固定モード or モデル無し
     }
 
     // 照射先（target）はモデル中心へ固定。ライト位置はその周囲 offset の点。
@@ -249,6 +304,24 @@ class LightController {
       ambientIntensity: this.ambient.intensity,
       ambientColor: '#' + this.ambient.color.getHexString(),
       lightMode: this.lightMode,
+    };
+  }
+
+  // --- 光源ヘルパー（DirectionalLightHelper）の表示 ON/OFF -----------------------
+  setHelperVisible(visible) { if (this.helper) this.helper.visible = !!visible; }
+  isHelperVisible() { return this.helper ? this.helper.visible : false; }
+
+  // --- デバッグ情報（📊 診断表示で影が動かない原因の切り分けに使う） --------------
+  //   mode   : 現在のライティングモード（'world' / 'model'）
+  //   node   : 回転検知に使っているノード名（センター等のボーン名 / 'model'）
+  //   yawDeg : そのノードから検知した Yaw（度）。null は世界固定 or モデル未検知。
+  //   モデルが回っているのに yawDeg が変化しない → 検知ノードが回っていない（要2で対処）。
+  //   yawDeg は変化しているのに影が動かない → 光源への適用側の問題、と切り分けられる。
+  getDebugInfo() {
+    return {
+      mode: this.lightMode,
+      node: this._rotSource ? (this._rotSource.name || this._rotSource.type || 'model') : '-',
+      yawDeg: this._debugYaw == null ? null : THREE.MathUtils.radToDeg(this._debugYaw),
     };
   }
 }
@@ -626,7 +699,12 @@ function renderCameraDebug() {
   const cam =
     `α${Math.round(a.alpha)} β${Math.round(a.beta)} γ${Math.round(a.gamma)} | ` +
     `f.y ${c.lastFy.toFixed(2)} | dist ${Math.round(c.distance)}`;
-  statusEl.textContent = statusEl.textContent ? `${statusEl.textContent} | ${cam}` : cam;
+  // 光源追従の切り分け情報：検知ノードと Yaw（度）。モデルを回して yaw が動くか確認する。
+  const li = lightController.getDebugInfo();
+  const light = li.mode === 'model'
+    ? `light:model node=${li.node} yaw=${li.yawDeg == null ? '-' : Math.round(li.yawDeg) + '°'}`
+    : 'light:world';
+  statusEl.textContent = statusEl.textContent ? `${statusEl.textContent} | ${cam} | ${light}` : `${cam} | ${light}`;
 }
 
 // -----------------------------------------------------------------------------
@@ -849,6 +927,12 @@ export function setLightAmbientIntensity(v) { lightController.setAmbientIntensit
 export function setLightAmbientColor(value) { lightController.setAmbientColor(value); }
 export function setLightMode(mode)          { lightController.setLightMode(mode); }
 export function getLightState()             { return lightController.getState(); }
+// 光源ヘルパー（DirectionalLightHelper）の表示 ON/OFF。トグル時は新しい表示状態を返す。
+export function setLightHelperVisible(v)    { lightController.setHelperVisible(v); }
+export function toggleLightHelper()         { const v = !lightController.isHelperVisible(); lightController.setHelperVisible(v); return v; }
+export function isLightHelperVisible()      { return lightController.isHelperVisible(); }
+// 📊 診断表示用：現在の光源追従デバッグ情報（モード・検知ノード・検知 Yaw）。
+export function getLightDebugInfo()         { return lightController.getDebugInfo(); }
 
 // -----------------------------------------------------------------------------
 // AR（背面カメラ）背景モード（📹 アイコン）
@@ -1529,11 +1613,6 @@ function animate() {
   // ---- カメラ姿勢更新 ---------------------------------------------------------
   updateCameraPose();
 
-  // ---- 光源更新 ---------------------------------------------------------------
-  //   世界固定モードでは同じ位置を再確定するだけ（実質不変）、モデル追従モードでは
-  //   モデルの向きに合わせて指向性光源の位置を追従させる。トリグ数回のみで軽量。
-  lightController.update(currentModel);
-
   // --- ダンス（VMD）と音源の強制同期 -------------------------------------------
   //   スマホで FPS が落ちても音と踊りがズレないよう、経過時間ではなく「音源の再生位置」
   //   へ毎フレーム追従させる。MMDAnimationHelper は _restoreBones → mixer.update(delta)
@@ -1583,6 +1662,13 @@ function animate() {
       }
     }
   }
+
+  // ---- 光源更新 ---------------------------------------------------------------
+  //   世界固定モードでは同じ位置を再確定するだけ（実質不変）、モデル追従モードでは
+  //   モデルの向き（センター等のボーンのワールド回転）に合わせて指向性光源を追従させる。
+  //   ダンスのボーン更新（mmdHelper.update）と揺れもの適用の「後」に呼ぶことで、
+  //   今フレームの姿勢を遅延なく反映し、📊 のデバッグ Yaw も現在の見た目と一致させる。
+  lightController.update(currentModel);
 
   // [一時診断] 加速度が実際に届いているか／対象ボーン数を画面に常時表示（sensor.js）。
   // 端末を振っても acc が 0.00 のままなら devicemotion 未配信が原因。右上アイコンで OFF にできる。
