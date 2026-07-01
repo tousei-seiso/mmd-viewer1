@@ -196,11 +196,15 @@ class LightController {
   update(model) {
     const offset = this._computeOffset();
 
-    // モデル追従モード：offset をモデルのワールド回転で回し、モデル正面に相対配置する。
-    // モデルは Yaw（Y 軸回転）しか持たないため、これで仰角を保ったまま水平に追従する。
+    // モデル追従モード：モデルのワールド回転から Yaw（Y 軸回転）成分のみを抽出し、
+    // その回転で offset を回して水平に追従させる。ワールド回転をそのまま適用すると
+    // Pitch/Roll まで反映されて仰角（elevation）が傾いてしまうため、Yaw のみに限定する。
     if (this.lightMode === 'model' && model) {
       model.getWorldQuaternion(this._modelQuat);
-      offset.applyQuaternion(this._modelQuat);
+      // YXZ 順の Euler に変換し、Y 成分（Yaw）だけを取り出した Quaternion を作る。
+      const euler = new THREE.Euler().setFromQuaternion(this._modelQuat, 'YXZ');
+      const yawQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, euler.y, 0));
+      offset.applyQuaternion(yawQuat);
     }
 
     // 照射先（target）はモデル中心へ固定。ライト位置はその周囲 offset の点。
