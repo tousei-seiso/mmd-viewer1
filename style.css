@@ -585,6 +585,62 @@ body {
   background: var(--btn-bg-on);
 }
 
+/* 設定保存アイコン（2 列目の 6 段目、見た目は共通） */
+#settings-save-toggle {
+  position: fixed;
+  /* 2 列目の 6 段目（カメラ設定の 1 段下） */
+  top: calc(var(--safe-top) + var(--btn-step) * 5);
+  right: calc(var(--safe-right) + var(--btn-step) * 1);
+  z-index: 20;
+  width: var(--btn-size);
+  height: var(--btn-size);
+  border: none;
+  border-radius: 50%;
+  background: var(--btn-bg);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.2s ease, transform 0.1s ease;
+}
+
+#settings-save-toggle:active {
+  transform: scale(0.92);
+}
+
+/* 設定読み込みアイコン（2 列目の 7 段目、見た目は共通） */
+#settings-load-toggle {
+  position: fixed;
+  /* 2 列目の 7 段目（保存アイコンの 1 段下） */
+  top: calc(var(--safe-top) + var(--btn-step) * 6);
+  right: calc(var(--safe-right) + var(--btn-step) * 1);
+  z-index: 20;
+  width: var(--btn-size);
+  height: var(--btn-size);
+  border: none;
+  border-radius: 50%;
+  background: var(--btn-bg);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.2s ease, transform 0.1s ease;
+}
+
+#settings-load-toggle:active {
+  transform: scale(0.92);
+}
+
 /* AR 背景用のカメラ映像。VideoTexture のソースにするだけで画面には出さない。
    iOS Safari は display:none の <video> をテクスチャ化できないことがあるため、
    表示は残したまま 1px・不可視・タップ不可にして事実上隠す。 */

@@ -17,6 +17,8 @@ import {
   resetView,
   applyBgColor,
   applyFloorColor,
+  getBgColor,
+  getFloorColor,
   listModelFiles,
   getCurrentModelPath,
   MODEL_DIR,
@@ -53,7 +55,7 @@ import {
   isCameraFollow,
   getCameraState,
   onCameraChange,
-} from './view3d.js?v=16';
+} from './view3d.js?v=17';
 
 // -----------------------------------------------------------------------------
 // スライダー微調整ステッパー（光源パネル・カメラパネル共通）
@@ -699,6 +701,140 @@ function setupCameraControls() {
 }
 
 // -----------------------------------------------------------------------------
+// 設定の保存／読み込み（💾 保存・📂 読み込みアイコン）
+//   保存対象:
+//     ・光源設定（💡）… 方位角・仰角・指向性/環境光の強度と色・ライティングモード
+//     ・光源ヘルパー（🔦）の ON/OFF
+//     ・カメラ追従設定（⚙️🎥）… 方位角・仰角・距離・追従 ON/OFF
+//     ・本格物理（🎐）の ON/OFF
+//     ・背景／床の色（🎨）
+//   これらを 1 つの JSON にまとめ、ブラウザの localStorage に固定キーで保存する（1件のみ）。
+//   読み込み時は、既存の UI コントロール（スライダー・チェックボックス・トグルボタン）を
+//   操作して 'input'/'change'/'click' を発火させることで、view3d への反映と画面表示の同期を
+//   まとめて既存ハンドラに任せる（配線の重複や状態のズレを避けるため）。
+// -----------------------------------------------------------------------------
+const SETTINGS_STORAGE_KEY = 'mmd-viewer-settings';
+
+// 現在の設定を 1 つのオブジェクトへ集約する（view3d の getter が真実の値）。
+function collectSettings() {
+  const light = getLightState();   // azimuth/elevation/dirIntensity/dirColor/ambientIntensity/ambientColor/lightMode
+  const camera = getCameraState(); // azimuth/elevation/distance/follow/…
+  return {
+    version: 1,
+    light: {
+      azimuth: light.azimuth,
+      elevation: light.elevation,
+      dirIntensity: light.dirIntensity,
+      dirColor: light.dirColor,
+      ambientIntensity: light.ambientIntensity,
+      ambientColor: light.ambientColor,
+      mode: light.lightMode,
+      helperVisible: isLightHelperVisible(),
+    },
+    camera: {
+      azimuth: camera.azimuth,
+      elevation: camera.elevation,
+      distance: camera.distance,
+      follow: camera.follow,
+    },
+    physics: isPhysicsEnabled(),
+    colors: {
+      background: getBgColor(),
+      floor: getFloorColor(),
+    },
+  };
+}
+
+// range/color 入力へ値をセットし、'input' を発火して既存ハンドラ（値の反映・表示更新）を再利用する。
+function setInputValue(id, value) {
+  if (value == null) return;
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.value = String(value);
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+// チェックボックス（ライティングモード・カメラ追従）へ状態をセットし、'change' を発火する。
+function setCheckboxState(id, checked) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.checked = !!checked;
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+// トグルボタン（物理・光源ヘルパー）は現在値と食い違うときだけクリックして目的の状態にする。
+function setToggleState(id, want, isOn) {
+  const el = document.getElementById(id);
+  if (!el || el.disabled) return;
+  if (isOn() !== !!want) el.click();
+}
+
+// 集約済み設定オブジェクトを各コントロールへ反映する。
+function applySettings(s) {
+  if (!s || typeof s !== 'object') return;
+
+  const light = s.light || {};
+  setInputValue('light-azimuth', light.azimuth);
+  setInputValue('light-elevation', light.elevation);
+  setInputValue('light-dir-intensity', light.dirIntensity);
+  setInputValue('light-dir-color', light.dirColor);
+  setInputValue('light-amb-intensity', light.ambientIntensity);
+  setInputValue('light-amb-color', light.ambientColor);
+  if (light.mode !== undefined) setCheckboxState('light-mode-toggle', light.mode === 'model');
+  if (light.helperVisible !== undefined) setToggleState('light-helper-toggle', light.helperVisible, isLightHelperVisible);
+
+  const camera = s.camera || {};
+  setInputValue('camera-azimuth', camera.azimuth);
+  setInputValue('camera-elevation', camera.elevation);
+  setInputValue('camera-distance', camera.distance);
+  if (camera.follow !== undefined) setCheckboxState('camera-follow-check', camera.follow);
+
+  const colors = s.colors || {};
+  setInputValue('bg-color', colors.background);
+  setInputValue('floor-color', colors.floor);
+
+  // 物理は非同期（Ammo.js のロードを伴う）。現在と異なるときだけボタンをクリックして切り替える。
+  if (s.physics !== undefined) setToggleState('physics-toggle', s.physics, isPhysicsEnabled);
+}
+
+function setupSettingsPersistence() {
+  const saveBtn = document.getElementById('settings-save-toggle');
+  const loadBtn = document.getElementById('settings-load-toggle');
+
+  saveBtn?.addEventListener('click', () => {
+    try {
+      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(collectSettings()));
+      setNowPlaying('💾 設定を保存しました');
+    } catch (err) {
+      console.error('設定の保存に失敗しました:', err);
+      setNowPlaying('⚠️ 設定を保存できませんでした');
+    }
+  });
+
+  loadBtn?.addEventListener('click', () => {
+    let raw;
+    try {
+      raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    } catch (err) {
+      console.error('設定の読み込みに失敗しました:', err);
+      setNowPlaying('⚠️ 設定を読み込めませんでした');
+      return;
+    }
+    if (!raw) {
+      setNowPlaying('⚠️ 保存された設定がありません');
+      return;
+    }
+    try {
+      applySettings(JSON.parse(raw));
+      setNowPlaying('📂 設定を読み込みました');
+    } catch (err) {
+      console.error('設定の解析に失敗しました:', err);
+      setNowPlaying('⚠️ 設定を読み込めませんでした');
+    }
+  });
+}
+
+// -----------------------------------------------------------------------------
 // 初期化（エントリーポイントから呼ぶ）。各 UI の DOM 取得・イベント配線をまとめる。
 // -----------------------------------------------------------------------------
 export function initUI() {
@@ -713,4 +849,5 @@ export function initUI() {
   setupLightPanel();
   setupLightHelperToggle();
   setupCameraControls();
+  setupSettingsPersistence();
 }

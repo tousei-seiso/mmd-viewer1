@@ -28,7 +28,7 @@ import {
   getOrientationAngles,
   renderSwayDebug,
   isSwayDebug,
-} from './sensor.js?v=16';
+} from './sensor.js?v=17';
 
 // 楽曲の読み込み・再生制御・シークバー（audio.js）
 import {
@@ -37,7 +37,7 @@ import {
   updateSeekBar,
   onAudioEnded,
   isSeekScrubbing,
-} from './audio.js?v=16';
+} from './audio.js?v=17';
 
 // -----------------------------------------------------------------------------
 // 設定値
@@ -1049,6 +1049,19 @@ export function applyBgColor(value) {
 }
 export function applyFloorColor(value) {
   if (ground && ground.material && ground.material.color) ground.material.color.set(value);
+}
+
+// 現在の背景・床の色を "#rrggbb" で返す（設定の保存用）。
+//   背景は AR 中だと scene.background がカメラ映像テクスチャなので、
+//   「AR 解除後に戻る通常背景」(arSavedBackground) の色を返す。
+export function getBgColor() {
+  const c = arActive ? arSavedBackground : scene.background;
+  return c && c.isColor ? '#' + c.getHexString() : '#223344';
+}
+export function getFloorColor() {
+  return ground && ground.material && ground.material.color
+    ? '#' + ground.material.color.getHexString()
+    : '#335577';
 }
 
 // -----------------------------------------------------------------------------

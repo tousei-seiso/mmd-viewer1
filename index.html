@@ -85,6 +85,14 @@
        方位角・仰角・モデルまでの距離・カメラ追従の ON/OFF を調整する。 -->
   <button id="camera-settings-toggle" type="button" title="カメラ設定（方位角・仰角・距離・追従）" aria-expanded="false">⚙️</button>
 
+  <!-- 設定保存アイコン（フロッピー）。現在の光源・カメラ追従・物理ON/OFF・背景/床の色・
+       光源ヘルパーON/OFF を JSON にまとめてブラウザの localStorage に保存する（固定1件）。 -->
+  <button id="settings-save-toggle" type="button" title="現在の設定を保存">💾</button>
+
+  <!-- 設定読み込みアイコン（フォルダ）。localStorage に保存した設定を読み込んで、
+       各コントロール（光源・カメラ・物理・色・ヘルパー）へ反映する。 -->
+  <button id="settings-load-toggle" type="button" title="保存した設定を読み込む">📂</button>
+
   <!-- AR 背景用のカメラ映像。THREE.VideoTexture のソースにするためだけの要素で、
        画面には表示しない（style.css で不可視化）。iOS Safari はテクスチャ化のため
        display:none を嫌うので、画面外へ寄せて事実上見えないようにしている。
@@ -207,6 +215,6 @@
   </div>
 
   <!-- ?v= はキャッシュ破棄用。更新時に番号を上げると確実に最新JSが読み込まれる。 -->
-  <script type="module" src="main.js?v=16"></script>
+  <script type="module" src="main.js?v=17"></script>
 </body>
 </html>
