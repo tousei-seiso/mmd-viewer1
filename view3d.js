@@ -28,7 +28,7 @@ import {
   getOrientationAngles,
   renderSwayDebug,
   isSwayDebug,
-} from './sensor.js?v=11';
+} from './sensor.js?v=12';
 
 // 楽曲の読み込み・再生制御・シークバー（audio.js）
 import {
@@ -37,7 +37,7 @@ import {
   updateSeekBar,
   onAudioEnded,
   isSeekScrubbing,
-} from './audio.js?v=11';
+} from './audio.js?v=12';
 
 // -----------------------------------------------------------------------------
 // 設定値
@@ -744,13 +744,18 @@ const cameraController = new ARCameraController(camera, TARGET);
 
 // 毎フレーム呼ばれるカメラ姿勢更新（デバイス姿勢＋ドラッグ＋追従＋ズームを集約）
 function updateCameraPose() {
-  const hasDevice = isOrientationActive();
+  // カメラ追従 ON のときはスマホの動き（ジャイロ＝デバイス姿勢）をカメラへ反映しない。
+  // 追従の狙いは「モデルの顔を常に同じ方位角・仰角から捉える」ことなので、デバイス姿勢で
+  // 上書きすると成立しない。よって追従中は hasDevice を強制的に false にして、球面周回
+  // （基準構図 ＋ ドラッグの方位角/仰角 ＋ モデルの facing Yaw）だけでカメラを駆動する。
+  const hasDevice = isOrientationActive() && !cameraFollow;
   if (hasDevice) {
     const angles = getOrientationAngles();
     computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
   }
   // カメラ追従 ON のときは、モデルの facing Yaw を周回角へ加算する（光源追従と同じ手法）。
-  // これにより、モデルが向きを変えてもカメラは同じ相対位置からモデルを見続ける。
+  // ジャイロを切った状態でこの Yaw を足すことで、モデルが向きを変えてもカメラは常に同じ
+  // 相対アングル（＝設定された方位角・仰角）からモデルの顔を捉え続ける。
   const followYaw = (cameraFollow && currentModel) ? getModelFacingYaw(currentModel, _camYawCache) : 0;
   cameraController.update(_deviceQuat, {
     hasDevice,

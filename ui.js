@@ -53,7 +53,7 @@ import {
   isCameraFollow,
   getCameraState,
   onCameraChange,
-} from './view3d.js?v=11';
+} from './view3d.js?v=12';
 
 // -----------------------------------------------------------------------------
 // 画面の向き固定トグル（🔓⇄🔒）
