@@ -28,7 +28,7 @@ import {
   getOrientationAngles,
   renderSwayDebug,
   isSwayDebug,
-} from './sensor.js?v=12';
+} from './sensor.js?v=14';
 
 // 楽曲の読み込み・再生制御・シークバー（audio.js）
 import {
@@ -37,7 +37,7 @@ import {
   updateSeekBar,
   onAudioEnded,
   isSeekScrubbing,
-} from './audio.js?v=12';
+} from './audio.js?v=14';
 
 // -----------------------------------------------------------------------------
 // 設定値
@@ -626,63 +626,79 @@ function applyModelYaw(targetUserDir) {
   currentModel.rotateOnWorldAxis(WORLD_UP, diff);
 }
 
-// --- モデルの「体の向き（Yaw）」検出（カメラ追従用の共有ヘルパー）-----------------
-//   光源追従（LightController._resolveRotationSource / update）と同じ手法。MMD モデルは
-//   SkinnedMesh 自身の quaternion が回らず、向きの変化はスケルトン内のボーン（下半身等）で
-//   起きる。そこで facing を最も安定して表す代表ボーンを解決し、その world 回転の Y 成分
-//   （Yaw）のみを取り出す。カメラ追従 ON 時に、この Yaw をカメラの周回角へ加算して、
-//   モデルが向きを変えてもカメラが同じ相対位置から見続けるようにする。
-const _camYawQuat  = new THREE.Quaternion(); // 検知ノードの world 回転（一時）
-const _camYawEuler = new THREE.Euler();      // world 回転 → YXZ Euler 変換用（一時）
-const _camYawCache = { node: null, forModel: null }; // 回転検知ノードのキャッシュ
+// --- モデルの「顔向き基準フレーム」検出（カメラ追従用）-----------------------------
+//   カメラ追従 ON のとき、カメラは「頭部の中心を原点とし、顔が向いている方向を基準ベクトル
+//   とする」座標系の中で、方位角・仰角・距離に従って配置される。したがってここでは頭ボーンを
+//   解決し、その world 位置（頭部中心）と world 回転から「顔の向き」を表す基準姿勢を作る。
+//
+//   ■ 基準姿勢（refQuat）
+//     頭ボーンの world 回転を YXZ Euler へ分解し、Yaw（Y）と Pitch（X）だけを採用して
+//     Roll（Z）を捨てる。顔の“向き”ベクトルは Roll では変化しない（前方軸まわりの回転）ため、
+//     Roll を落とすことで画面の水平を保ちつつ、顔が向く方向（Yaw＋Pitch）に正しく追従する。
+//     この refQuat は「ローカル +Z を顔の向きへ写す」回転なので、カメラ姿勢に使うと
+//     方位角=仰角=0 のとき視線 (0,0,-1)·refQuat が -顔向き＝顔を正面から見返す向きになり、
+//     カメラは頭部中心から見て顔の正面（distance だけ手前）に配置される。
+//
+//   ■ 頭ボーンの解決
+//     '頭' / 'head'（先端の '頭先' は中心ではないので除外）で探す。頭ボーン原点は概ね首〜
+//     後頭部の付け根にあるため、頭の中心へ寄せるべく基準姿勢の up 方向へ少し持ち上げる。
+const HEAD_CENTER_OFFSET_Y = 1.0;          // 頭ボーン原点 → 頭部中心への上方補正（頭ローカル up 方向, MMD標準スケール）
+const _camHeadCache = { node: null, resolvedFor: null }; // 頭ボーンのキャッシュ（null=未所持も記録）
+const _headWorldPos  = new THREE.Vector3();   // 頭部中心のワールド位置（一時）
+const _headWorldQuat = new THREE.Quaternion(); // 頭ボーンの world 回転（一時）
+const _headEuler     = new THREE.Euler();      // world 回転 → YXZ Euler 変換用（一時）
+const _headRefEuler  = new THREE.Euler();      // Roll を除いた顔向き Euler（一時）
+const _headRefQuat   = new THREE.Quaternion(); // 顔向き基準姿勢（一時）
+const _headUp        = new THREE.Vector3();    // 頭ローカル up（中心補正の方向, 一時）
+const _headFrame     = { center: _headWorldPos, quat: _headRefQuat }; // 返却用（中身は上の一時を参照）
 
-function resolveFacingBone(model, cache) {
+function resolveHeadBone(model, cache) {
   if (!model) return null;
-  if (cache.forModel === model && cache.node) return cache.node;
+  if (cache.resolvedFor === model) return cache.node; // 見つからなかった結果(null)も再探索しない
 
   let skinned = model.isSkinnedMesh ? model : null;
   if (!skinned) model.traverse((o) => { if (!skinned && o.isSkinnedMesh && o.skeleton) skinned = o; });
 
   let node = null;
   if (skinned && skinned.skeleton && skinned.skeleton.bones.length) {
-    const bones = skinned.skeleton.bones;
-    // 体の向きを表すボーンを、下半身（骨盤）→上半身→センター系の順で探す（光源追従と同一）。
-    const priority = ['下半身', 'lower', '上半身', 'upper', 'グルーブ', 'groove', 'センター', 'center', '全ての親', 'root'];
-    for (const key of priority) {
-      const lower = key.toLowerCase();
-      const found = bones.find((b) => {
-        const n = b.name || '';
-        if (n.includes('先') || n.includes('捩') || n.includes('よじり') || n.includes('twist')) return false;
-        return n.includes(key) || n.toLowerCase().includes(lower);
-      });
-      if (found) { node = found; break; }
-    }
-    if (!node) node = bones[0];
+    node = skinned.skeleton.bones.find((b) => {
+      const n = b.name || '';
+      if (n.includes('先')) return false; // '頭先'（頭頂の先端）は中心ではないので除外
+      return n === '頭' || n.includes('頭') || n.toLowerCase().includes('head');
+    }) || null;
   }
-  if (!node) node = model;
-
   cache.node = node;
-  cache.forModel = model;
+  cache.resolvedFor = model;
   return node;
 }
 
-// モデルの facing Yaw（ラジアン）を返す。モデル未検出時は 0。
-function getModelFacingYaw(model, cache) {
-  const node = resolveFacingBone(model, cache);
-  if (!node) return 0;
-  node.getWorldQuaternion(_camYawQuat);
-  return _camYawEuler.setFromQuaternion(_camYawQuat, 'YXZ').y;
+// モデルの「顔向き基準フレーム」{ center: 頭部中心, quat: 顔向き姿勢(Roll除去) } を返す。
+// 頭ボーンが無ければ null（呼び出し側で固定点 TARGET へ退避）。
+function getModelHeadFrame(model) {
+  const head = resolveHeadBone(model, _camHeadCache);
+  if (!head) return null;
+  head.getWorldPosition(_headWorldPos);
+  head.getWorldQuaternion(_headWorldQuat);
+  // Yaw+Pitch のみ採用（Roll=Z を捨てる）→ 顔の向きを保ちつつ画面の水平を維持。
+  const e = _headEuler.setFromQuaternion(_headWorldQuat, 'YXZ');
+  _headRefQuat.setFromEuler(_headRefEuler.set(e.x, e.y, 0, 'YXZ'));
+  // 頭ボーン原点（首付近）→ 頭部中心へ、頭ローカル up 方向に少し持ち上げる。
+  _headUp.set(0, 1, 0).applyQuaternion(_headRefQuat);
+  _headWorldPos.addScaledVector(_headUp, HEAD_CENTER_OFFSET_Y);
+  return _headFrame;
 }
 
 // --- ARCameraController ------------------------------------------------------
 //   フル AR：毎フレーム camera.quaternion = q（デバイス姿勢）にし、位置を TARGET から
 //   forward 方向へ distance だけ引く。ドラッグはローカル追加回転、平滑化は slerp。
 const SMOOTH_ANGLE = 0.25; // 姿勢 slerp の滑らかさ（0=固定, 1=即時）
+const TARGET_SMOOTH = 0.3; // 注視点（TARGET⇄頭部中心）追従の滑らかさ（追従ON/OFF切替時の移動も兼ねる）
 
 class ARCameraController {
   constructor(cam, target) {
     this.camera = cam;
-    this.target = target;
+    this.target = target;            // 既定の注視点（固定点 TARGET＝腰〜胸の高さ）
+    this._activeTarget = new THREE.Vector3().copy(target); // 実際に注視・周回する点（頭部追従で移動する）
     this.distance = ORBIT_RADIUS;
     this.lastFy = 0; // 直近の視線 f.y（テレメトリ表示用）
 
@@ -698,17 +714,26 @@ class ARCameraController {
     this._applyToCamera();
   }
 
-  // 毎フレーム更新。q: デバイス姿勢クォータニオン。opts: { hasDevice, dragYaw, dragPitch, targetDistance }
+  // 毎フレーム更新。q: デバイス姿勢クォータニオン。
+  //   opts: { hasDevice, refQuat, dragYaw, dragPitch, targetDistance, lookTarget }
+  //   refQuat : 追従 ON 時の基準姿勢＝顔の向き（非 null のとき最優先。デバイス/基準構図を無視）。
+  //   lookTarget: 注視・周回の中心（省略時は既定の固定点 TARGET）。追従 ON 時は頭部中心が渡る。
   update(q, opts) {
-    // 目標姿勢：デバイスがあれば q そのもの（フル AR）、無ければ基準姿勢。
-    if (opts.hasDevice) {
+    // 目標姿勢の基準：
+    //   ・追従 ON（refQuat あり）… 顔の向きを基準フレームにする（方位角・仰角はここからのオフセット）。
+    //   ・デバイスあり            … q そのもの（フル AR）。
+    //   ・それ以外                … 起動時の基準構図。
+    if (opts.refQuat) {
+      _targetQuat.copy(opts.refQuat);
+    } else if (opts.hasDevice) {
       _targetQuat.copy(q);
       this.lastFy = _fwd.set(0, 0, -1).applyQuaternion(q).y; // テレメトリ用
     } else {
       _targetQuat.copy(this._baseQuat);
     }
 
-    // ドラッグはデバイス座標系でのローカル追加回転（モデルは常に中心に保たれる）。
+    // ドラッグ＝方位角・仰角のオフセット。基準フレーム（顔向き/デバイス/基準構図）に対する
+    // ローカル追加回転として合成する（注視点は常に中心に保たれる）。
     if (opts.dragYaw || opts.dragPitch) {
       _dragEuler.set(opts.dragPitch, opts.dragYaw, 0, 'YXZ');
       _dragQuat.setFromEuler(_dragEuler);
@@ -718,6 +743,11 @@ class ARCameraController {
     // 姿勢を slerp で平滑化（角度分解しないのでどの姿勢でも破綻しない）。
     this.smoothQuat.slerp(_targetQuat, SMOOTH_ANGLE);
 
+    // 注視・周回の中心を目標点（頭部中心 or 固定点 TARGET）へ滑らかに追従させる。
+    // ダンスで頭が動いても頭部が画面中心に保たれ、追従 ON/OFF の切替も滑らかに移る。
+    const look = opts.lookTarget || this.target;
+    this._activeTarget.lerp(look, TARGET_SMOOTH);
+
     // ズーム距離を滑らかに追従（要件2：距離一定）。
     this.distance += (opts.targetDistance - this.distance) * ZOOM_SMOOTHING;
 
@@ -725,11 +755,11 @@ class ARCameraController {
   }
 
   // smoothQuat と distance からカメラの世界姿勢・位置を確定する。
-  //   camera.quaternion = 姿勢、position = TARGET − distance × forward（常に TARGET を注視）。
+  //   camera.quaternion = 姿勢、position = 注視点 − distance × forward（常に注視点を注視）。
   _applyToCamera() {
     this.camera.quaternion.copy(this.smoothQuat);
     _fwd.set(0, 0, -1).applyQuaternion(this.smoothQuat); // カメラ前方
-    this.camera.position.copy(this.target).addScaledVector(_fwd, -this.distance);
+    this.camera.position.copy(this._activeTarget).addScaledVector(_fwd, -this.distance);
   }
 
   // ズーム距離を即時設定（リセット時に滑らか追従を待たず確定させる）
@@ -748,20 +778,31 @@ function updateCameraPose() {
   // 追従の狙いは「モデルの顔を常に同じ方位角・仰角から捉える」ことなので、デバイス姿勢で
   // 上書きすると成立しない。よって追従中は hasDevice を強制的に false にして、球面周回
   // （基準構図 ＋ ドラッグの方位角/仰角 ＋ モデルの facing Yaw）だけでカメラを駆動する。
-  const hasDevice = isOrientationActive() && !cameraFollow;
+  // 追従 ON のとき、カメラの基準は「頭部中心を原点・顔の向きを基準ベクトル」とする座標系。
+  // その基準フレーム（refQuat）＋注視点（頭部中心 lookTarget）を求める。頭ボーンが無い
+  // モデルや追従 OFF では refQuat=null・lookTarget=固定点 TARGET に退避する。
+  let refQuat = null;
+  let lookTarget = TARGET;
+  if (cameraFollow && currentModel) {
+    const frame = getModelHeadFrame(currentModel);
+    if (frame) { refQuat = frame.quat; lookTarget = frame.center; }
+  }
+
+  // 追従 ON のときはスマホの動き（ジャイロ）をカメラへ反映しない。顔向き基準フレームを
+  // refQuat が上書きするため、ここではジャイロ計算自体を省く（追従の狙いを崩さない）。
+  const hasDevice = isOrientationActive() && !refQuat;
   if (hasDevice) {
     const angles = getOrientationAngles();
     computeDeviceQuat(angles.alpha, angles.beta, angles.gamma);
   }
-  // カメラ追従 ON のときは、モデルの facing Yaw を周回角へ加算する（光源追従と同じ手法）。
-  // ジャイロを切った状態でこの Yaw を足すことで、モデルが向きを変えてもカメラは常に同じ
-  // 相対アングル（＝設定された方位角・仰角）からモデルの顔を捉え続ける。
-  const followYaw = (cameraFollow && currentModel) ? getModelFacingYaw(currentModel, _camYawCache) : 0;
+
   cameraController.update(_deviceQuat, {
     hasDevice,
-    dragYaw: dragYaw + followYaw,
-    dragPitch,
+    refQuat,               // 追従時のみ非 null（顔の向きが基準）
+    dragYaw,               // 方位角オフセット（顔向きベクトルに対する相対角）
+    dragPitch,             // 仰角オフセット（同上）
     targetDistance,
+    lookTarget,
   });
 }
 
