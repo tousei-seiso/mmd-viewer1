@@ -28,7 +28,7 @@ import {
   getOrientationAngles,
   renderSwayDebug,
   isSwayDebug,
-} from './sensor.js?v=9';
+} from './sensor.js?v=10';
 
 // 楽曲の読み込み・再生制御・シークバー（audio.js）
 import {
@@ -37,7 +37,7 @@ import {
   updateSeekBar,
   onAudioEnded,
   isSeekScrubbing,
-} from './audio.js?v=9';
+} from './audio.js?v=10';
 
 // -----------------------------------------------------------------------------
 // 設定値
@@ -197,12 +197,15 @@ class LightController {
 
   _clampDeg(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
-  // モデルの中から「実際に回転するノード」を解決する（毎フレーム探索しないようキャッシュ）。
+  // モデルの中から「体の向き（facing）を表すノード」を解決する（毎フレームは探索せずキャッシュ）。
   //   1. モデル自身／子孫から SkinnedMesh（スケルトンあり）を探す。
-  //   2. スケルトンがあれば、向きを担う代表ボーンを優先順で探す
-  //      （センター → グルーブ → 全ての親 → ルートボーン bones[0]）。
-  //      getWorldQuaternion はそのボーンの祖先回転（＝applyModelYaw によるモデル自身の
-  //      Yaw も含む）をすべて累積するため、ダンスのボーン回転とモデル回転の両方を拾える。
+  //   2. スケルトンがあれば、向きを担う代表ボーンを優先順で探す。
+  //      ※ 重要：getWorldQuaternion は「祖先」の回転しか累積せず、子孫の回転は含まない。
+  //        実機診断で、ダンス中もセンター／全ての親の world Yaw は起動時の値のまま一定
+  //        だと判明した（＝体の向き変更はセンターの“子”＝下半身／上半身側で起きている）。
+  //        そのためセンターをサンプリングしても向きの変化を捉えられない。
+  //        体の facing を最も安定して表すのは骨盤＝下半身なので、下半身を最優先で選ぶ。
+  //        （上半身はダンスの捻りノイズが大きいため次点。センター系は最後の保険。）
   //   3. スケルトンが無ければモデル自身を返す（applyModelYaw の回転だけは拾える）。
   _resolveRotationSource(model) {
     if (!model) return null;
@@ -216,11 +219,15 @@ class LightController {
     let node = null;
     if (skinned && skinned.skeleton && skinned.skeleton.bones.length) {
       const bones = skinned.skeleton.bones;
-      const priority = ['センター', 'center', 'グルーブ', 'groove', '全ての親', 'root'];
+      // 体の向きを表すボーンを、下半身（骨盤）→上半身→センター系の順で探す。
+      // 「先」（下半身先など表示専用でアニメしないボーン）や捻り系は避けたいので後ろへ。
+      const priority = ['下半身', 'lower', '上半身', 'upper', 'グルーブ', 'groove', 'センター', 'center', '全ての親', 'root'];
       for (const key of priority) {
         const lower = key.toLowerCase();
         const found = bones.find((b) => {
           const n = b.name || '';
+          // 「先」「捩」「補助」等の派生ボーンは体幹の facing 用には使わない。
+          if (n.includes('先') || n.includes('捩') || n.includes('よじり') || n.includes('twist')) return false;
           return n.includes(key) || n.toLowerCase().includes(lower);
         });
         if (found) { node = found; break; }

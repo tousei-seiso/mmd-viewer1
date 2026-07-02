@@ -46,7 +46,7 @@ import {
   getLightState,
   toggleLightHelper,
   isLightHelperVisible,
-} from './view3d.js?v=9';
+} from './view3d.js?v=10';
 
 // -----------------------------------------------------------------------------
 // 画面の向き固定トグル（🔓⇄🔒）
