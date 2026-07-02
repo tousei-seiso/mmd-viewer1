@@ -28,7 +28,7 @@ import {
   getOrientationAngles,
   renderSwayDebug,
   isSwayDebug,
-} from './sensor.js?v=15';
+} from './sensor.js?v=16';
 
 // 楽曲の読み込み・再生制御・シークバー（audio.js）
 import {
@@ -37,7 +37,7 @@ import {
   updateSeekBar,
   onAudioEnded,
   isSeekScrubbing,
-} from './audio.js?v=15';
+} from './audio.js?v=16';
 
 // -----------------------------------------------------------------------------
 // 設定値

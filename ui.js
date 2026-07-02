@@ -53,7 +53,50 @@ import {
   isCameraFollow,
   getCameraState,
   onCameraChange,
-} from './view3d.js?v=15';
+} from './view3d.js?v=16';
+
+// -----------------------------------------------------------------------------
+// スライダー微調整ステッパー（光源パネル・カメラパネル共通）
+//   各 range スライダーの左端に「0（0にセット）」「−（−1）」、右端に「＋（+1）」の小ボタンを
+//   付ける。0 ちょうどや ±1 の細かな値合わせをタップで確実に行えるようにするためのもの。
+//   ボタンは値を書き換えたあと 'input' イベントを発火するので、各パネル既存の 'input'
+//   ハンドラ（値の反映・数値表示更新）がそのまま再利用される（配線の重複なし）。
+// -----------------------------------------------------------------------------
+
+// スライダー値を min/max でクランプして設定し、'input' を発火して既存ハンドラへ反映する。
+function setRangeValue(input, val) {
+  const min = input.min !== '' ? Number(input.min) : -Infinity;
+  const max = input.max !== '' ? Number(input.max) : Infinity;
+  input.value = String(Math.max(min, Math.min(max, val)));
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+// スライダーの左端に [0][−]、右端に [＋] のステッパーボタンを差し込む。
+function addSliderSteppers(input) {
+  if (!input || !input.parentNode) return;
+  const row = input.parentNode;
+  row.classList.add('has-stepper'); // レイアウト（gap 圧縮）を CSS で切り替える
+
+  const makeBtn = (extraClass, text, title, onClick) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'slider-btn' + (extraClass ? ' ' + extraClass : '');
+    b.textContent = text;
+    b.title = title;
+    // label 内に置くため preventDefault で label→スライダーの転送を防ぎ、stopPropagation で
+    // パネル外側クリック判定に巻き込まれないようにする。
+    b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); onClick(); });
+    return b;
+  };
+
+  const zero  = makeBtn('slider-btn-zero', '0', '0にセット', () => setRangeValue(input, 0));
+  const minus = makeBtn('', '−', '−1', () => setRangeValue(input, Number(input.value) - 1));
+  const plus  = makeBtn('', '＋', '+1', () => setRangeValue(input, Number(input.value) + 1));
+
+  row.insertBefore(zero, input);         // 左端：0
+  row.insertBefore(minus, input);        // 左端：−（0 の右隣・スライダーの左）
+  row.insertBefore(plus, input.nextSibling); // 右端：＋（スライダーの右）
+}
 
 // -----------------------------------------------------------------------------
 // 画面の向き固定トグル（🔓⇄🔒）
@@ -523,6 +566,9 @@ function setupLightPanel() {
     setLightMode(isModel ? 'model' : 'world');
   });
 
+  // 各スライダーに 0／±1 のステッパーボタンを付ける（'input' ハンドラ配線後に呼ぶ）。
+  [azimuth, elevation, dirIntensity, ambIntensity].forEach(addSliderSteppers);
+
   // パネル開閉（カラーパネルと同じ流儀：外側クリックで閉じる）
   function closeLightPanel() {
     lightPanel.classList.add('hidden');
@@ -616,6 +662,9 @@ function setupCameraControls() {
     if (distanceVal) distanceVal.textContent = String(Math.round(v));
     setCameraDistance(v);
   });
+
+  // 各スライダーに 0／±1 のステッパーボタンを付ける（'input' ハンドラ配線後に呼ぶ）。
+  [azimuth, elevation, distance].forEach(addSliderSteppers);
 
   function setFollow(on) {
     setCameraFollow(on);

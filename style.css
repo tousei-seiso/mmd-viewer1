@@ -747,6 +747,47 @@ body {
   cursor: pointer;
 }
 
+/* -------------------------------------------------------------------------
+   スライダー微調整ステッパー（0／−1／＋1 ボタン）
+     ・addSliderSteppers()（ui.js）が range スライダーの左端に [0][−]、右端に [＋] を挿入し、
+       その行に .has-stepper を付ける。列が増えるぶん gap・ラベル幅・数値幅を詰めて
+       スライダーの可動幅を確保する。
+   ------------------------------------------------------------------------- */
+.light-row.has-stepper {
+  gap: 4px;
+}
+.light-row.has-stepper > span {
+  flex: 0 0 34px;
+}
+.light-row.has-stepper output {
+  flex: 0 0 30px;
+}
+.slider-btn {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+.slider-btn:active {
+  background: rgba(255, 255, 255, 0.22);
+  transform: scale(0.9);
+}
+.slider-btn-zero {
+  font-size: 12px;
+}
+
 /* モード切替行：ラベル＋トグルスイッチ（チェックボックス） */
 .light-mode-row {
   justify-content: space-between;
