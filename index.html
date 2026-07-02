@@ -76,6 +76,15 @@
        光源の位置・向きを線で可視化し、モデル追従で光源が回っているか目視確認するためのもの。 -->
   <button id="light-helper-toggle" type="button" title="光源ヘルパー（向き可視化）をON/OFF" aria-pressed="true">🔦</button>
 
+  <!-- カメラ追従 ON/OFF トグル（2列目の 4 段目）。ON にすると光源追従と同じ手法で
+       モデルの向き（facing Yaw）にカメラの周回角を追従させ、モデルが回っても同じ相対
+       位置から見続ける。設定は下の ⚙️ カメラ設定パネルの追従スイッチと同期する。 -->
+  <button id="camera-follow-toggle" type="button" title="カメラ追従をON/OFF" aria-pressed="false">🎥</button>
+
+  <!-- カメラ設定パネルを開く歯車アイコン（2列目の 5 段目）。クリックでカメラパネルを開閉。
+       方位角・仰角・モデルまでの距離・カメラ追従の ON/OFF を調整する。 -->
+  <button id="camera-settings-toggle" type="button" title="カメラ設定（方位角・仰角・距離・追従）" aria-expanded="false">⚙️</button>
+
   <!-- AR 背景用のカメラ映像。THREE.VideoTexture のソースにするためだけの要素で、
        画面には表示しない（style.css で不可視化）。iOS Safari はテクスチャ化のため
        display:none を嫌うので、画面外へ寄せて事実上見えないようにしている。
@@ -136,6 +145,35 @@
     </label>
   </div>
 
+  <!-- カメラ設定パネル（⚙️）。方位角・仰角・モデルまでの距離・カメラ追従を調整する。
+       各コントロールは ui.js の setupCameraControls() で view3d.js のカメラ用 setter へ
+       配線される。方位角・仰角は「既定の正面構図（リセット位置）からのオフセット角」で、
+       画面をドラッグすると自動的にこのスライダー値へ追従する。 -->
+  <div id="camera-panel" class="hidden">
+    <div class="light-section-title">カメラ</div>
+    <label class="light-row">
+      <span>方位角</span>
+      <input type="range" id="camera-azimuth" min="0" max="360" step="1" value="0" />
+      <output id="camera-azimuth-val">0°</output>
+    </label>
+    <label class="light-row">
+      <span>仰角</span>
+      <input type="range" id="camera-elevation" min="-74" max="74" step="1" value="0" />
+      <output id="camera-elevation-val">0°</output>
+    </label>
+    <label class="light-row">
+      <span>距離</span>
+      <input type="range" id="camera-distance" min="5" max="80" step="1" value="30" />
+      <output id="camera-distance-val">30</output>
+    </label>
+
+    <div class="light-section-title">カメラ追従</div>
+    <label class="light-row light-mode-row">
+      <span id="camera-follow-label">追従OFF</span>
+      <input type="checkbox" id="camera-follow-check" role="switch" aria-checked="false" />
+    </label>
+  </div>
+
   <!-- モデル選択ダイアログ（models フォルダ内の .pmx / .pmd を一覧表示） -->
   <div id="model-dialog" class="hidden" role="dialog" aria-modal="true" aria-label="モデルを選択">
     <div id="model-dialog-panel">
@@ -169,6 +207,6 @@
   </div>
 
   <!-- ?v= はキャッシュ破棄用。更新時に番号を上げると確実に最新JSが読み込まれる。 -->
-  <script type="module" src="main.js?v=10"></script>
+  <script type="module" src="main.js?v=11"></script>
 </body>
 </html>

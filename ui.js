@@ -46,7 +46,14 @@ import {
   getLightState,
   toggleLightHelper,
   isLightHelperVisible,
-} from './view3d.js?v=10';
+  setCameraAzimuth,
+  setCameraElevation,
+  setCameraDistance,
+  setCameraFollow,
+  isCameraFollow,
+  getCameraState,
+  onCameraChange,
+} from './view3d.js?v=11';
 
 // -----------------------------------------------------------------------------
 // 画面の向き固定トグル（🔓⇄🔒）
@@ -522,6 +529,9 @@ function setupLightPanel() {
     lightBtn.setAttribute('aria-expanded', 'false');
   }
   function openLightPanel() {
+    // 同じ位置に開くカメラパネルとは排他にする（重なって見えないように）。
+    document.getElementById('camera-panel')?.classList.add('hidden');
+    document.getElementById('camera-settings-toggle')?.setAttribute('aria-expanded', 'false');
     lightPanel.classList.remove('hidden');
     lightBtn.setAttribute('aria-expanded', 'true');
   }
@@ -533,6 +543,110 @@ function setupLightPanel() {
   // パネル内のクリックは伝播させない（外側クリック判定に巻き込まれない）
   lightPanel.addEventListener('click', (e) => e.stopPropagation());
   window.addEventListener('click', () => closeLightPanel());
+}
+
+// -----------------------------------------------------------------------------
+// カメラ設定パネル（⚙️）＋カメラ追従トグル（🎥）
+//   方位角・仰角・モデルまでの距離・カメラ追従の ON/OFF を view3d.js のカメラ用 setter へ
+//   'input' で即時反映する。追従の ON/OFF はアイコン（🎥）とパネル内スイッチの両方から
+//   操作でき、互いの表示を同期する。
+//   画面をドラッグ／ピンチ／リセットするとカメラ角・距離が変わるので、onCameraChange で
+//   通知を受けてスライダー表示を実際のカメラ状態へ追従させる（要件：ドラッグで方位角・
+//   仰角の設定値を自動更新）。パネルの開閉はライトパネルと同じ流儀（外側クリックで閉じる）。
+// -----------------------------------------------------------------------------
+function setupCameraControls() {
+  const followBtn = document.getElementById('camera-follow-toggle');
+  const settingsBtn = document.getElementById('camera-settings-toggle');
+  const panel = document.getElementById('camera-panel');
+
+  const azimuth = document.getElementById('camera-azimuth');
+  const azimuthVal = document.getElementById('camera-azimuth-val');
+  const elevation = document.getElementById('camera-elevation');
+  const elevationVal = document.getElementById('camera-elevation-val');
+  const distance = document.getElementById('camera-distance');
+  const distanceVal = document.getElementById('camera-distance-val');
+  const followCheck = document.getElementById('camera-follow-check');
+  const followLabel = document.getElementById('camera-follow-label');
+
+  // 仰角スライダーの可動域を実際の上限（DRAG_PITCH_LIMIT 由来）へ合わせる。
+  const s0 = getCameraState();
+  if (elevation && typeof s0.elevationLimit === 'number') {
+    elevation.min = String(-s0.elevationLimit);
+    elevation.max = String(s0.elevationLimit);
+  }
+  if (distance) {
+    if (typeof s0.minDistance === 'number') distance.min = String(Math.round(s0.minDistance));
+    if (typeof s0.maxDistance === 'number') distance.max = String(Math.round(s0.maxDistance));
+  }
+
+  // スライダー表示を実際のカメラ状態へ同期（ドラッグ・ピンチ・リセット時にも呼ぶ）。
+  function syncControls() {
+    const s = getCameraState();
+    if (azimuth) { azimuth.value = String(Math.round(s.azimuth)); if (azimuthVal) azimuthVal.textContent = `${Math.round(s.azimuth)}°`; }
+    if (elevation) { elevation.value = String(Math.round(s.elevation)); if (elevationVal) elevationVal.textContent = `${Math.round(s.elevation)}°`; }
+    if (distance) { distance.value = String(Math.round(s.distance)); if (distanceVal) distanceVal.textContent = String(Math.round(s.distance)); }
+  }
+
+  // 追従 ON/OFF の表示（アイコン・パネルスイッチ・ラベル）をまとめて更新。
+  function updateFollowUI(on) {
+    if (followBtn) {
+      followBtn.setAttribute('aria-pressed', String(on));
+      followBtn.title = on ? 'カメラ追従：ON（タップでOFF）' : 'カメラ追従：OFF（タップでON）';
+    }
+    if (followCheck) { followCheck.checked = on; followCheck.setAttribute('aria-checked', String(on)); }
+    if (followLabel) followLabel.textContent = on ? '追従ON' : '追従OFF';
+  }
+
+  syncControls();
+  updateFollowUI(isCameraFollow());
+
+  // 'input' で即時反映（ドラッグ中もリアルタイムにカメラが動く）
+  azimuth?.addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    if (azimuthVal) azimuthVal.textContent = `${Math.round(v)}°`;
+    setCameraAzimuth(v);
+  });
+  elevation?.addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    if (elevationVal) elevationVal.textContent = `${Math.round(v)}°`;
+    setCameraElevation(v);
+  });
+  distance?.addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    if (distanceVal) distanceVal.textContent = String(Math.round(v));
+    setCameraDistance(v);
+  });
+
+  function setFollow(on) {
+    setCameraFollow(on);
+    updateFollowUI(on);
+  }
+  followBtn?.addEventListener('click', (e) => { e.stopPropagation(); setFollow(!isCameraFollow()); });
+  followCheck?.addEventListener('change', (e) => setFollow(e.target.checked));
+
+  // 画面ドラッグ・ピンチ・リセットでカメラ角／距離が変わったら、スライダー表示を追従させる。
+  onCameraChange(syncControls);
+
+  // パネル開閉（ライトパネルと同じ流儀：外側クリックで閉じる）
+  function closePanel() {
+    panel?.classList.add('hidden');
+    settingsBtn?.setAttribute('aria-expanded', 'false');
+  }
+  function openPanel() {
+    // 同じ位置に開く光源パネルとは排他にする（重なって見えないように）。
+    document.getElementById('light-panel')?.classList.add('hidden');
+    document.getElementById('light-toggle')?.setAttribute('aria-expanded', 'false');
+    panel?.classList.remove('hidden');
+    settingsBtn?.setAttribute('aria-expanded', 'true');
+    syncControls(); // 開いた瞬間に最新のカメラ状態へ合わせる
+  }
+  settingsBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (panel && panel.classList.contains('hidden')) openPanel();
+    else closePanel();
+  });
+  panel?.addEventListener('click', (e) => e.stopPropagation());
+  window.addEventListener('click', () => closePanel());
 }
 
 // -----------------------------------------------------------------------------
@@ -549,4 +663,5 @@ export function initUI() {
   setupArToggle();
   setupLightPanel();
   setupLightHelperToggle();
+  setupCameraControls();
 }

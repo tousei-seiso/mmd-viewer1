@@ -413,12 +413,12 @@ body {
   transform: scale(0.92);
 }
 
-/* AR（背面カメラ）背景 ON/OFF トグル（スクリーンショットアイコンのすぐ下、見た目は共通） */
+/* AR（背面カメラ）背景 ON/OFF トグル（2 列目の 1 段目＝右列 10 個の次の列の先頭） */
 #ar-toggle {
   position: fixed;
-  /* 上から 10 段下（スクリーンショットの 1 段下） */
-  top: calc(var(--safe-top) + var(--btn-step) * 10);
-  right: var(--safe-right);
+  /* 2 列目の先頭（上端）。右へ 1 段分ずらして 2 列目に置く。 */
+  top: var(--safe-top);
+  right: calc(var(--safe-right) + var(--btn-step) * 1);
   z-index: 20;
   width: var(--btn-size);
   height: var(--btn-size);
@@ -453,12 +453,12 @@ body {
   pointer-events: none;
 }
 
-/* 光源設定パネル開閉トグル（AR アイコンのすぐ下、見た目は共通） */
+/* 光源設定パネル開閉トグル（2 列目の 2 段目、見た目は共通） */
 #light-toggle {
   position: fixed;
-  /* 上から 11 段下（AR の 1 段下） */
-  top: calc(var(--safe-top) + var(--btn-step) * 11);
-  right: var(--safe-right);
+  /* 2 列目の 2 段目（AR の 1 段下） */
+  top: calc(var(--safe-top) + var(--btn-step) * 1);
+  right: calc(var(--safe-right) + var(--btn-step) * 1);
   z-index: 20;
   width: var(--btn-size);
   height: var(--btn-size);
@@ -486,12 +486,12 @@ body {
   background: var(--btn-bg-on);
 }
 
-/* 光源ヘルパー表示トグル（光源アイコンのすぐ下、見た目は共通） */
+/* 光源ヘルパー表示トグル（2 列目の 3 段目、見た目は共通） */
 #light-helper-toggle {
   position: fixed;
-  /* 上から 12 段下（光源アイコンの 1 段下） */
-  top: calc(var(--safe-top) + var(--btn-step) * 12);
-  right: var(--safe-right);
+  /* 2 列目の 3 段目（光源アイコンの 1 段下） */
+  top: calc(var(--safe-top) + var(--btn-step) * 2);
+  right: calc(var(--safe-right) + var(--btn-step) * 1);
   z-index: 20;
   width: var(--btn-size);
   height: var(--btn-size);
@@ -519,6 +519,72 @@ body {
   background: var(--btn-bg-on);
 }
 
+/* カメラ追従 ON/OFF トグル（2 列目の 4 段目、見た目は共通） */
+#camera-follow-toggle {
+  position: fixed;
+  /* 2 列目の 4 段目（光源ヘルパーの 1 段下） */
+  top: calc(var(--safe-top) + var(--btn-step) * 3);
+  right: calc(var(--safe-right) + var(--btn-step) * 1);
+  z-index: 20;
+  width: var(--btn-size);
+  height: var(--btn-size);
+  border: none;
+  border-radius: 50%;
+  background: var(--btn-bg);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.2s ease, transform 0.1s ease;
+}
+
+#camera-follow-toggle:active {
+  transform: scale(0.92);
+}
+
+/* 追従 ON 状態（aria-pressed="true"）は色で明示 */
+#camera-follow-toggle[aria-pressed='true'] {
+  background: var(--btn-bg-on);
+}
+
+/* カメラ設定パネル開閉トグル（2 列目の 5 段目、見た目は共通） */
+#camera-settings-toggle {
+  position: fixed;
+  /* 2 列目の 5 段目（カメラ追従の 1 段下） */
+  top: calc(var(--safe-top) + var(--btn-step) * 4);
+  right: calc(var(--safe-right) + var(--btn-step) * 1);
+  z-index: 20;
+  width: var(--btn-size);
+  height: var(--btn-size);
+  border: none;
+  border-radius: 50%;
+  background: var(--btn-bg);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.2s ease, transform 0.1s ease;
+}
+
+#camera-settings-toggle:active {
+  transform: scale(0.92);
+}
+
+/* パネル展開中（aria-expanded="true"）は色で明示 */
+#camera-settings-toggle[aria-expanded='true'] {
+  background: var(--btn-bg-on);
+}
+
 /* AR 背景用のカメラ映像。VideoTexture のソースにするだけで画面には出さない。
    iOS Safari は display:none の <video> をテクスチャ化できないことがあるため、
    表示は残したまま 1px・不可視・タップ不可にして事実上隠す。 */
@@ -533,11 +599,12 @@ body {
   z-index: -1;
 }
 
-/* 色変更パネル（パレットアイコンの左隣に表示） */
+/* 色変更パネル（アイコン 2 列の左隣に表示） */
 #color-panel {
   position: fixed;
   top: calc(var(--safe-top) + var(--btn-step) * 8);
-  right: calc(var(--safe-right) + var(--btn-step));
+  /* アイコンが 2 列になったので、2 列分左へ逃がして重ならないようにする。 */
+  right: calc(var(--safe-right) + var(--btn-step) * 2);
   z-index: 22;
   display: flex;
   flex-direction: column;
@@ -583,9 +650,9 @@ body {
 #light-panel {
   position: fixed;
   /* 画面上端付近に寄せて縦の表示領域を最大化する（下端はみ出し防止）。
-     アイコン列の左隣に開く（right はボタン 1 段分の逃がし）。 */
+     アイコン 2 列の左隣に開く（right はボタン 2 段分の逃がし）。 */
   top: var(--safe-top);
-  right: calc(var(--safe-right) + var(--btn-step));
+  right: calc(var(--safe-right) + var(--btn-step) * 2);
   z-index: 22;
   display: flex;
   flex-direction: column;
@@ -603,6 +670,31 @@ body {
 }
 
 #light-panel.hidden {
+  display: none;
+}
+
+/* カメラ設定パネル（⚙️）：光源パネルと同じ配色・角丸・影・レイアウトを踏襲する。
+   歯車アイコンの左隣（アイコン 2 列の外側）に開く。 */
+#camera-panel {
+  position: fixed;
+  top: var(--safe-top);
+  right: calc(var(--safe-right) + var(--btn-step) * 2);
+  z-index: 22;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 12px 14px;
+  width: min(260px, 78vw);
+  max-height: calc(100vh - var(--safe-top) - 12px);
+  overflow-y: auto;
+  background: rgba(24, 28, 36, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+#camera-panel.hidden {
   display: none;
 }
 
