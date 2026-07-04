@@ -14,6 +14,21 @@
       "name": "モニタリング(Best Friend Remix)",
       "vmd": "モニタリング(Best Friend Remix)/モニタリング (Best Friend Remix) モーション.vmd",
       "audio": "モニタリング(Best Friend Remix)/モニタリング (Best Friend Remix).mp3"
+    },
+    {
+      "name": "ザムザ",
+      "vmd": "ザムザ/ザムザ.vmd",
+      "audio": "ザムザ/ザムザ.mp3"
+    },
+    {
+      "name": "ワールドイズマイン",
+      "vmd": "ワールドイズマイン/ワールドイズマイン.vmd",
+      "audio": "ワールドイズマイン/ワールドイズマイン.mp3"
+    },
+    {
+      "name": "ワールドイズマイン（男性モデル向け）",
+      "vmd": "ワールドイズマイン/ワールドイズマイン（男性モデル向け）.vmd",
+      "audio": "ワールドイズマイン/ワールドイズマイン.mp3"
     }
   ]
 }
