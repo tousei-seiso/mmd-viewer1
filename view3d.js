@@ -1904,13 +1904,34 @@ function stopRenderLoop() {
   rafId = null;
 }
 
+// 非表示中に「こちらの都合で」音源を一時停止したかどうかの目印。
+//   ユーザーが自分で一時停止していた曲を、復帰時に勝手に再生し始めないよう、
+//   自分が止めた場合だけ再開させるために使う。
+let audioPausedByVisibility = false;
+
 // タブがアクティブ⇄非アクティブに切り替わったときに呼ばれる。
-//   非表示 → 停止、表示 → 再開。ダンス再生中でも、復帰時は描画ループ内の
-//   「delta = audio.currentTime − mixer.time」による強制同期が働くため、
-//   停止していた間に進んだ音源位置へ踊りが一気に追いついて自動的に同期が戻る。
+//   非表示 → 描画ループを停止し、モーション再生中なら音楽も一時停止する。
+//   表示    → 描画ループを再開し、こちらが止めた音楽だけ元の位置から再生を再開する。
+//   音源を止めている間は audio.currentTime が進まず、描画ループも止まって mixer.time も
+//   進まないため、復帰時の「delta = audio.currentTime − mixer.time」はほぼ 0＝踊りと音が
+//   ズレずにその場から自然に続く。
 function handleVisibilityChange() {
-  if (document.hidden) stopRenderLoop();
-  else startRenderLoop();
+  if (document.hidden) {
+    // モーション再生中の音楽を一時停止（電池節約＋復帰時の同期ズレ防止）。
+    if (danceState.active && danceState.playing && danceState.audio && !danceState.audio.paused) {
+      try { danceState.audio.pause(); } catch (_) { /* 無視 */ }
+      audioPausedByVisibility = true;
+    }
+    stopRenderLoop();
+  } else {
+    startRenderLoop();
+    // 非表示中に自分で止めた曲だけ、元の位置から再生を再開する。
+    if (audioPausedByVisibility && danceState.active && danceState.playing && danceState.audio) {
+      const p = danceState.audio.play();
+      if (p && typeof p.catch === 'function') p.catch(() => { /* 自動再生制限などは無視 */ });
+    }
+    audioPausedByVisibility = false;
+  }
 }
 
 // -----------------------------------------------------------------------------
