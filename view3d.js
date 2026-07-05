@@ -1804,8 +1804,12 @@ export async function listMotions() {
 // 描画ループ
 // -----------------------------------------------------------------------------
 
+// requestAnimationFrame のハンドル。タブが非アクティブのときはループを完全停止し、
+// このハンドルを null にする（＝停止中の目印。二重起動防止にも使う）。
+let rafId = null;
+
 function animate() {
-  requestAnimationFrame(animate);
+  rafId = requestAnimationFrame(animate);
 
   // ---- カメラ姿勢更新 ---------------------------------------------------------
   updateCameraPose();
@@ -1876,6 +1880,37 @@ function animate() {
   if (arActive && arTexture) arTexture.needsUpdate = true;
 
   renderer.render(scene, camera);
+}
+
+// -----------------------------------------------------------------------------
+// タブの表示/非表示に応じた描画ループの一時停止・再開（バッテリー節約）
+//   スマホで画面を閉じる／別アプリやタブへ切り替えると、ブラウザは rAF を絞るものの
+//   完全には止めないことがある。ここでは Page Visibility API で「非表示」を検知したら
+//   requestAnimationFrame を明示的にキャンセルし、3D 描画・ダンス/揺れもの/物理の計算を
+//   すべて停止する（CPU/GPU を使わない＝発熱・電池消費を抑える）。
+//   再び「表示」に戻ったらループを再開する。
+// -----------------------------------------------------------------------------
+
+// 描画ループを開始する（停止中のときだけ。二重起動を防ぐ）。
+function startRenderLoop() {
+  if (rafId !== null) return; // 既に走っている
+  animate();
+}
+
+// 描画ループを完全に停止する（次フレームの予約を取り消す）。
+function stopRenderLoop() {
+  if (rafId === null) return; // 既に停止済み
+  cancelAnimationFrame(rafId);
+  rafId = null;
+}
+
+// タブがアクティブ⇄非アクティブに切り替わったときに呼ばれる。
+//   非表示 → 停止、表示 → 再開。ダンス再生中でも、復帰時は描画ループ内の
+//   「delta = audio.currentTime − mixer.time」による強制同期が働くため、
+//   停止していた間に進んだ音源位置へ踊りが一気に追いついて自動的に同期が戻る。
+function handleVisibilityChange() {
+  if (document.hidden) stopRenderLoop();
+  else startRenderLoop();
 }
 
 // -----------------------------------------------------------------------------
@@ -1955,6 +1990,10 @@ export function initView3d() {
   if (screen.orientation) {
     screen.orientation.addEventListener('change', resizeRenderer);
   }
+
+  // タブが非アクティブ（画面を閉じた・別アプリ/タブへ切替）になったら描画ループを
+  // 完全停止してバッテリーを節約し、アクティブに戻ったら再開する。
+  document.addEventListener('visibilitychange', handleVisibilityChange);
 
   // 初期モデルの読み込み（候補を順に試す。未配置でもアプリが落ちないようにする）
   loadModelWithFallback(MODEL_CANDIDATES)
