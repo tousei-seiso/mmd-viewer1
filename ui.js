@@ -57,7 +57,7 @@ import {
   onCameraChange,
   setEyeContact,
   isEyeContact,
-} from './view3d.js?v=18';
+} from './view3d.js?v=19';
 
 // -----------------------------------------------------------------------------
 // スライダー微調整ステッパー（光源パネル・カメラパネル共通）
