@@ -94,9 +94,18 @@
   <button id="settings-load-toggle" type="button" title="保存した設定を読み込む">📂</button>
 
   <!-- カメラ目線 ON/OFF トグル（設定読み込みアイコンの下）。ON にすると、モデルの目
-       （左目・右目ボーン）が毎フレームカメラの方向を向き、視線が常にこちらを向く
-       （view3d.js の setEyeContact）。 -->
+       （左目・右目ボーン）が毎フレームカメラの方向を向き、視線が常にこちらを向く。
+       モーション非再生時は頭も一定角までカメラへ向ける（view3d.js の setEyeContact）。 -->
   <button id="eye-contact-toggle" type="button" title="カメラ目線をON/OFF" aria-pressed="false">👀</button>
+
+  <!-- カメラ目線の設定パネルを開くアイコン（👀 の下）。瞳が顔の正面から回転できる
+       最大角度（度）をスライダーで調整する（view3d.js の setEyeMaxAngle）。 -->
+  <button id="eye-settings-toggle" type="button" title="カメラ目線の角度設定" aria-haspopup="dialog" aria-expanded="false">🎯</button>
+
+  <!-- チェック線 ON/OFF トグル（🎯 の下）。ON にすると、瞳の実際の視線（黄）と
+       瞳→カメラの理想線（水色）を描画する。両者が重なれば目線が正しくカメラを
+       向いている（view3d.js の setEyeDebug）。 -->
+  <button id="eye-debug-toggle" type="button" title="目線チェック線をON/OFF" aria-pressed="false">📏</button>
 
   <!-- AR 背景用のカメラ映像。THREE.VideoTexture のソースにするためだけの要素で、
        画面には表示しない（style.css で不可視化）。iOS Safari はテクスチャ化のため
@@ -187,6 +196,17 @@
     </label>
   </div>
 
+  <!-- カメラ目線の角度設定パネル（🎯）。瞳が顔の正面から回転できる最大角度（度）を調整する。
+       ui.js の setupEyeSettings() で view3d.js の setEyeMaxAngle() へ配線される。 -->
+  <div id="eye-panel" class="hidden">
+    <div class="light-section-title">カメラ目線</div>
+    <label class="light-row">
+      <span>最大角度</span>
+      <input type="range" id="eye-max-angle" min="0" max="60" step="1" value="20" />
+      <output id="eye-max-angle-val">20°</output>
+    </label>
+  </div>
+
   <!-- モデル選択ダイアログ（models フォルダ内の .pmx / .pmd を一覧表示） -->
   <div id="model-dialog" class="hidden" role="dialog" aria-modal="true" aria-label="モデルを選択">
     <div id="model-dialog-panel">
@@ -220,6 +240,6 @@
   </div>
 
   <!-- ?v= はキャッシュ破棄用。更新時に番号を上げると確実に最新JSが読み込まれる。 -->
-  <script type="module" src="main.js?v=19"></script>
+  <script type="module" src="main.js?v=20"></script>
 </body>
 </html>

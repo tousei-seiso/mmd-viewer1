@@ -28,7 +28,7 @@ import {
   getOrientationAngles,
   renderSwayDebug,
   isSwayDebug,
-} from './sensor.js?v=19';
+} from './sensor.js?v=20';
 
 // 楽曲の読み込み・再生制御・シークバー（audio.js）
 import {
@@ -37,7 +37,7 @@ import {
   updateSeekBar,
   onAudioEnded,
   isSeekScrubbing,
-} from './audio.js?v=19';
+} from './audio.js?v=20';
 
 // -----------------------------------------------------------------------------
 // 設定値
@@ -703,18 +703,30 @@ function getModelHeadFrame(model) {
 //   不自然に寄り目・白目にならないよう、Yaw/Pitch はクランプする。
 //   ダンス再生中は mmdHelper.update（＝VMD 適用・付与解決）の「後」に呼ぶため踊りを消さず上書きできる。
 // -----------------------------------------------------------------------------
-const EYE_YAW_LIMIT   = THREE.MathUtils.degToRad(35); // 左右の可動限界
-const EYE_PITCH_LIMIT = THREE.MathUtils.degToRad(24); // 上下の可動限界
-// 左目・右目ボーンのキャッシュ（rest=既定ローカル姿勢も保持。OFF 復帰時に戻す）。
+// 瞳が顔の正面から回転できる最大角（左右・上下共通。⚙️アイコンで可変）。
+let eyeMaxAngleRad = THREE.MathUtils.degToRad(20);
+const HEAD_MAX_ANGLE = THREE.MathUtils.degToRad(30); // 頭がカメラへ向けて回れる最大角（正面から）
+const HEAD_TURN_SMOOTH = 0.2; // 頭追従の slerp 平滑度（0=固定, 1=即時。切替時のポップ抑制）
+let eyeDebug = false; // 📏 チェック線（視線・理想線）の表示 ON/OFF
+
+// 左目・右目・頭ボーンのキャッシュ（rest=既定ローカル姿勢も保持。OFF 復帰時に戻す）。
 const _eyeCache = {
-  left: null, right: null, resolvedFor: null,
-  leftRest: new THREE.Quaternion(), rightRest: new THREE.Quaternion(),
+  left: null, right: null, head: null, resolvedFor: null,
+  leftRest: new THREE.Quaternion(), rightRest: new THREE.Quaternion(), headRest: new THREE.Quaternion(),
+  headModified: false,
 };
 const _eyeWorldPos   = new THREE.Vector3();     // 眼球ボーンのワールド位置（一時）
 const _eyeParentQuat = new THREE.Quaternion();  // 親（頭）の world 回転（一時）
 const _eyeDir        = new THREE.Vector3();     // 目→カメラのワールド方向（一時）
 const _eyeLocalDir   = new THREE.Vector3();     // 同上を親ローカルへ変換した方向（一時）
 const _eyeEuler      = new THREE.Euler();        // Yaw/Pitch → クォータニオン変換用（一時）
+const _headPos       = new THREE.Vector3();     // 頭ボーンのワールド位置（一時）
+const _headDir       = new THREE.Vector3();     // 頭→カメラのワールド方向（一時）
+const _headParentQuat= new THREE.Quaternion();  // 頭の親の world 回転（一時）
+const _headLocalDir  = new THREE.Vector3();     // 頭→カメラを頭の親ローカルへ変換（一時）
+const _headTargetQuat= new THREE.Quaternion();  // 頭の目標ローカル回転（一時）
+const _headTmpQuat   = new THREE.Quaternion();  // 頭回転の合成用（一時）
+const _headEulerTmp  = new THREE.Euler();        // 頭 Yaw/Pitch → クォータニオン（一時）
 
 // 指定側（'左'/'右' と英語 'left'/'right'）の眼球ボーンを探す。
 function findEyeBone(bones, jp, enSide) {
@@ -729,7 +741,7 @@ function findEyeBone(bones, jp, enSide) {
       || null;
 }
 
-// 左目・右目ボーンを解決する。見つかったら既定のローカル姿勢を控える。
+// 左目・右目・頭（眼球ボーンの親）を解決する。見つかったら既定のローカル姿勢を控える。
 function resolveEyeBones(model, cache) {
   if (!model) return cache;
   if (cache.resolvedFor === model) return cache; // 見つからなかった結果(null)も再探索しない
@@ -743,17 +755,21 @@ function resolveEyeBones(model, cache) {
     left  = findEyeBone(bones, '左', 'left');
     right = findEyeBone(bones, '右', 'right');
   }
+  const head = (left && left.parent) || (right && right.parent) || null; // 頭追従に使う（＝眼球の親）
   cache.left = left;
   cache.right = right;
+  cache.head = head;
   cache.resolvedFor = model;
+  cache.headModified = false;
   if (left)  cache.leftRest.copy(left.quaternion);
   if (right) cache.rightRest.copy(right.quaternion);
-  console.log(`カメラ目線 対象ボーン: 左目=${left ? left.name : 'なし'} / 右目=${right ? right.name : 'なし'}`);
+  if (head)  cache.headRest.copy(head.quaternion);
+  console.log(`カメラ目線 対象ボーン: 左目=${left ? left.name : 'なし'} / 右目=${right ? right.name : 'なし'} / 頭=${head ? head.name : 'なし'}`);
   return cache;
 }
 
-// 1 本の眼球ボーンをカメラ方向へ向ける。
-function aimEyeAtCamera(eye) {
+// 1 本の眼球ボーンをカメラ方向へ向ける（顔の正面から maxRad まで）。
+function aimEyeAtCamera(eye, maxRad) {
   if (!eye || !eye.parent) return;
   eye.getWorldPosition(_eyeWorldPos);
   _eyeDir.copy(camera.position).sub(_eyeWorldPos);
@@ -764,20 +780,113 @@ function aimEyeAtCamera(eye) {
   eye.parent.getWorldQuaternion(_eyeParentQuat);
   _eyeLocalDir.copy(_eyeDir).applyQuaternion(_eyeParentQuat.invert());
 
-  // +Z（顔の正面）を localDir へ写す YXZ 回転の Yaw（Y）/Pitch（X）。
+  // +Z（顔の正面）を localDir へ写す YXZ 回転の Yaw（Y）/Pitch（X）。maxRad でクランプ。
   let yaw   = Math.atan2(_eyeLocalDir.x, _eyeLocalDir.z);
   let pitch = -Math.asin(clamp(_eyeLocalDir.y, -1, 1));
-  yaw   = clamp(yaw,   -EYE_YAW_LIMIT,   EYE_YAW_LIMIT);
-  pitch = clamp(pitch, -EYE_PITCH_LIMIT, EYE_PITCH_LIMIT);
+  yaw   = clamp(yaw,   -maxRad, maxRad);
+  pitch = clamp(pitch, -maxRad, maxRad);
   eye.quaternion.setFromEuler(_eyeEuler.set(pitch, yaw, 0, 'YXZ'));
 }
 
-// 左目・右目をカメラ方向へ向ける（ON 時のみ）。毎フレーム animate() から呼ぶ。
+// 頭をカメラの方向へ向ける（モーション非再生時のみ呼ぶ）。瞳だけでは届かない分
+// （最大角 eyeMaxAngleRad を超える分）を頭で補い、HEAD_MAX_ANGLE で頭打ちにする。
+// 目標姿勢へ slerp することで、切替時のポップを抑える。
+function turnHeadToward(head) {
+  if (!head) return;
+  head.getWorldPosition(_headPos);
+  _headDir.copy(camera.position).sub(_headPos);
+  if (_headDir.lengthSq() < 1e-8) return;
+  _headDir.normalize();
+  if (head.parent) head.parent.getWorldQuaternion(_headParentQuat); else _headParentQuat.identity();
+  _headLocalDir.copy(_headDir).applyQuaternion(_headParentQuat.invert());
+  const desiredYaw   = Math.atan2(_headLocalDir.x, _headLocalDir.z);
+  const desiredPitch = -Math.asin(clamp(_headLocalDir.y, -1, 1));
+  const overflowYaw   = desiredYaw   - clamp(desiredYaw,   -eyeMaxAngleRad, eyeMaxAngleRad);
+  const overflowPitch = desiredPitch - clamp(desiredPitch, -eyeMaxAngleRad, eyeMaxAngleRad);
+  const headYaw   = clamp(overflowYaw,   -HEAD_MAX_ANGLE, HEAD_MAX_ANGLE);
+  const headPitch = clamp(overflowPitch, -HEAD_MAX_ANGLE, HEAD_MAX_ANGLE);
+  // 既定姿勢（rest）＋（正面からの）Yaw/Pitch を目標に、slerp で滑らかに寄せる。
+  _headTargetQuat.copy(_eyeCache.headRest)
+    .multiply(_headTmpQuat.setFromEuler(_headEulerTmp.set(headPitch, headYaw, 0, 'YXZ')));
+  head.quaternion.slerp(_headTargetQuat, HEAD_TURN_SMOOTH);
+  _eyeCache.headModified = true;
+}
+
+// カメラ目線の毎フレーム更新（animate から常に呼ぶ）。ON 時は頭（非再生時のみ）＋左右の目を
+// カメラへ向け、チェック線（📏）が ON なら視線・理想線を更新する。
 function updateEyeContact() {
-  if (!eyeContact || !currentModel) return;
+  if (!currentModel) { updateEyeDebugLines(null, null); return; }
   const c = resolveEyeBones(currentModel, _eyeCache);
-  aimEyeAtCamera(c.left);
-  aimEyeAtCamera(c.right);
+  if (eyeContact) {
+    // 頭追従はモーション再生中は行わない（VMD の頭の動きを上書きしないため）。
+    const playing = danceState.active && danceState.playing;
+    if (c.head && !playing) turnHeadToward(c.head);
+    // 頭を回した「後」に目を合わせるので、頭で足りない残差だけ目が担い、視線はカメラを向く。
+    aimEyeAtCamera(c.left,  eyeMaxAngleRad);
+    aimEyeAtCamera(c.right, eyeMaxAngleRad);
+  }
+  updateEyeDebugLines(c.left, c.right);
+}
+
+// -----------------------------------------------------------------------------
+// チェック線（📏）：瞳の「視線方向」の線（黄）と、瞳→カメラの「理想線」（水色）を描画する。
+//   カメラ目線が正しく効いていれば、視線（黄）はカメラ位置に届き、理想線（水色）と重なる。
+//   モデルに隠れても見えるよう depthTest を切って最前面に描く。
+// -----------------------------------------------------------------------------
+let _eyeDebugGroup = null;   // 線をまとめる Group（scene 直下）
+let _gazeLines = null;       // 視線（黄）×2（左右）
+let _idealLines = null;      // 理想線（水色）×2（左右）
+const _gazeQuat = new THREE.Quaternion();
+const _gazeDir  = new THREE.Vector3();
+const _gazeEnd  = new THREE.Vector3();
+
+function makeDebugLine(color) {
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+  const mat = new THREE.LineBasicMaterial({ color, depthTest: false, depthWrite: false, transparent: true });
+  const line = new THREE.Line(geom, mat);
+  line.renderOrder = 999; // モデルより後に描いて最前面に
+  line.frustumCulled = false;
+  return line;
+}
+
+function ensureEyeDebugLines() {
+  if (_eyeDebugGroup) return;
+  _eyeDebugGroup = new THREE.Group();
+  _gazeLines  = [makeDebugLine(0xffee00), makeDebugLine(0xffee00)]; // 黄：実際の視線
+  _idealLines = [makeDebugLine(0x00ddff), makeDebugLine(0x00ddff)]; // 水色：瞳→カメラの理想
+  for (const l of [..._gazeLines, ..._idealLines]) _eyeDebugGroup.add(l);
+  scene.add(_eyeDebugGroup);
+}
+
+function setLineEndpoints(line, a, b) {
+  const p = line.geometry.attributes.position.array;
+  p[0] = a.x; p[1] = a.y; p[2] = a.z;
+  p[3] = b.x; p[4] = b.y; p[5] = b.z;
+  line.geometry.attributes.position.needsUpdate = true;
+}
+
+function updateEyeDebugLines(left, right) {
+  if (!eyeDebug) { if (_eyeDebugGroup) _eyeDebugGroup.visible = false; return; }
+  ensureEyeDebugLines();
+  _eyeDebugGroup.visible = true;
+  const eyes = [left, right];
+  for (let i = 0; i < 2; i++) {
+    const eye = eyes[i];
+    const gaze = _gazeLines[i];
+    const ideal = _idealLines[i];
+    if (!eye || !eye.parent) { gaze.visible = false; ideal.visible = false; continue; }
+    gaze.visible = true; ideal.visible = true;
+    eye.getWorldPosition(_eyeWorldPos);
+    const len = _eyeWorldPos.distanceTo(camera.position); // カメラまでの距離で線長を合わせる
+    // 実際の視線＝親の world 回転 × 目のローカル回転 を +Z に適用した向き。
+    eye.parent.getWorldQuaternion(_gazeQuat);
+    _gazeQuat.multiply(eye.quaternion);
+    _gazeDir.set(0, 0, 1).applyQuaternion(_gazeQuat).normalize();
+    _gazeEnd.copy(_eyeWorldPos).addScaledVector(_gazeDir, len);
+    setLineEndpoints(gaze, _eyeWorldPos, _gazeEnd);       // 黄：瞳中心 → 視線方向
+    setLineEndpoints(ideal, _eyeWorldPos, camera.position); // 水色：瞳中心 → カメラ位置
+  }
 }
 
 // --- ARCameraController ------------------------------------------------------
@@ -1211,14 +1320,28 @@ export function isCameraFollow()        { return cameraFollow; }
 // カメラ目線（👀）。ON にするとモデルの視線が常にカメラを向く。
 export function setEyeContact(on) {
   eyeContact = !!on;
-  // OFF にした瞬間、左目・右目を既定姿勢へ戻す（踊り中は次フレームの VMD／付与が上書きする）。
+  // OFF にした瞬間、左目・右目（と、動かした頭）を既定姿勢へ戻す。
+  // 踊り中は次フレームの VMD／付与が上書きするので、頭は非再生時のみ戻す。
   if (!eyeContact && currentModel) {
     const c = resolveEyeBones(currentModel, _eyeCache);
     if (c.left)  c.left.quaternion.copy(c.leftRest);
     if (c.right) c.right.quaternion.copy(c.rightRest);
+    const playing = danceState.active && danceState.playing;
+    if (c.head && c.headModified && !playing) { c.head.quaternion.copy(c.headRest); c.headModified = false; }
   }
 }
 export function isEyeContact() { return eyeContact; }
+
+// 瞳が顔の正面から回転できる最大角（度）。⚙️ 設定アイコンから調整する。
+export function setEyeMaxAngle(deg) { eyeMaxAngleRad = THREE.MathUtils.degToRad(clamp(deg, 0, 60)); }
+export function getEyeMaxAngle() { return THREE.MathUtils.radToDeg(eyeMaxAngleRad); }
+
+// チェック線（📏）。ON にすると視線（黄）と瞳→カメラの理想線（水色）を描画する。
+export function setEyeDebug(on) {
+  eyeDebug = !!on;
+  if (!eyeDebug && _eyeDebugGroup) _eyeDebugGroup.visible = false;
+}
+export function isEyeDebug() { return eyeDebug; }
 
 // 現在のカメラ設定を UI 同期用に返す（副作用なし）。スライダーの min/max もここで供給する。
 export function getCameraState() {

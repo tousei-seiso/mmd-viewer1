@@ -57,7 +57,11 @@ import {
   onCameraChange,
   setEyeContact,
   isEyeContact,
-} from './view3d.js?v=19';
+  setEyeMaxAngle,
+  getEyeMaxAngle,
+  setEyeDebug,
+  isEyeDebug,
+} from './view3d.js?v=20';
 
 // -----------------------------------------------------------------------------
 // スライダー微調整ステッパー（光源パネル・カメラパネル共通）
@@ -497,8 +501,8 @@ function setupLightHelperToggle() {
 
 // -----------------------------------------------------------------------------
 // カメラ目線トグル（👀 アイコン）
-//   ON にすると、モデルの目（両目ボーン）が毎フレームカメラの方向を向き、視線が常に
-//   こちらを向く。パネルを持たない単純なトグル（光源ヘルパートグルと同じ流儀）。
+//   ON にすると、モデルの目（左目・右目ボーン）が毎フレームカメラの方向を向き、視線が常に
+//   こちらを向く（非再生時は頭も一定角まで追従）。パネルを持たない単純なトグル。
 // -----------------------------------------------------------------------------
 function setupEyeContactToggle() {
   const btn = document.getElementById('eye-contact-toggle');
@@ -514,6 +518,71 @@ function setupEyeContactToggle() {
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
     setEyeContact(!isEyeContact());
+    updateButton();
+  });
+}
+
+// -----------------------------------------------------------------------------
+// カメラ目線の角度設定パネル（🎯 アイコン）
+//   瞳が顔の正面から回転できる最大角度（度）をスライダーで調整する。パネルの開閉は
+//   カメラパネルと同じ流儀（外側クリックで閉じる／同じ位置の他パネルとは排他）。
+// -----------------------------------------------------------------------------
+function setupEyeSettings() {
+  const btn = document.getElementById('eye-settings-toggle');
+  const panel = document.getElementById('eye-panel');
+  const slider = document.getElementById('eye-max-angle');
+  const val = document.getElementById('eye-max-angle-val');
+  if (!btn || !panel) return;
+
+  // 初期値を view3d の実値へ同期（HTML の value とズレても getter が真実）。
+  if (slider) {
+    slider.value = String(Math.round(getEyeMaxAngle()));
+    if (val) val.textContent = `${Math.round(getEyeMaxAngle())}°`;
+  }
+  slider?.addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    if (val) val.textContent = `${Math.round(v)}°`;
+    setEyeMaxAngle(v);
+  });
+  addSliderSteppers(slider);
+
+  function closePanel() { panel.classList.add('hidden'); btn.setAttribute('aria-expanded', 'false'); }
+  function openPanel() {
+    // 同じ位置に開くライト／カメラパネルとは排他にする。
+    document.getElementById('light-panel')?.classList.add('hidden');
+    document.getElementById('light-toggle')?.setAttribute('aria-expanded', 'false');
+    document.getElementById('camera-panel')?.classList.add('hidden');
+    document.getElementById('camera-settings-toggle')?.setAttribute('aria-expanded', 'false');
+    panel.classList.remove('hidden');
+    btn.setAttribute('aria-expanded', 'true');
+    if (slider) { slider.value = String(Math.round(getEyeMaxAngle())); if (val) val.textContent = `${Math.round(getEyeMaxAngle())}°`; }
+  }
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (panel.classList.contains('hidden')) openPanel(); else closePanel();
+  });
+  panel.addEventListener('click', (e) => e.stopPropagation());
+  window.addEventListener('click', () => closePanel());
+}
+
+// -----------------------------------------------------------------------------
+// 目線チェック線トグル（📏 アイコン）
+//   ON にすると、瞳の実際の視線（黄）と瞳→カメラの理想線（水色）を描画する。単純なトグル。
+// -----------------------------------------------------------------------------
+function setupEyeDebugToggle() {
+  const btn = document.getElementById('eye-debug-toggle');
+  if (!btn) return;
+
+  function updateButton() {
+    const on = isEyeDebug();
+    btn.setAttribute('aria-pressed', String(on));
+    btn.title = on ? '目線チェック線：ON（タップでOFF）' : '目線チェック線：OFF（タップでON）';
+  }
+  updateButton();
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setEyeDebug(!isEyeDebug());
     updateButton();
   });
 }
@@ -762,6 +831,7 @@ function collectSettings() {
       distance: camera.distance,
       follow: camera.follow,
       eyeContact: isEyeContact(),
+      eyeMaxAngle: getEyeMaxAngle(),
     },
     physics: isPhysicsEnabled(),
     colors: {
@@ -814,6 +884,7 @@ function applySettings(s) {
   setInputValue('camera-elevation', camera.elevation);
   setInputValue('camera-distance', camera.distance);
   if (camera.follow !== undefined) setCheckboxState('camera-follow-check', camera.follow);
+  if (camera.eyeMaxAngle !== undefined) setInputValue('eye-max-angle', camera.eyeMaxAngle);
   if (camera.eyeContact !== undefined) setToggleState('eye-contact-toggle', camera.eyeContact, isEyeContact);
 
   const colors = s.colors || {};
@@ -877,5 +948,7 @@ export function initUI() {
   setupLightHelperToggle();
   setupCameraControls();
   setupEyeContactToggle();
+  setupEyeSettings();
+  setupEyeDebugToggle();
   setupSettingsPersistence();
 }
