@@ -55,7 +55,9 @@ import {
   isCameraFollow,
   getCameraState,
   onCameraChange,
-} from './view3d.js?v=17';
+  setEyeContact,
+  isEyeContact,
+} from './view3d.js?v=18';
 
 // -----------------------------------------------------------------------------
 // スライダー微調整ステッパー（光源パネル・カメラパネル共通）
@@ -494,6 +496,29 @@ function setupLightHelperToggle() {
 }
 
 // -----------------------------------------------------------------------------
+// カメラ目線トグル（👀 アイコン）
+//   ON にすると、モデルの目（両目ボーン）が毎フレームカメラの方向を向き、視線が常に
+//   こちらを向く。パネルを持たない単純なトグル（光源ヘルパートグルと同じ流儀）。
+// -----------------------------------------------------------------------------
+function setupEyeContactToggle() {
+  const btn = document.getElementById('eye-contact-toggle');
+  if (!btn) return;
+
+  function updateButton() {
+    const on = isEyeContact();
+    btn.setAttribute('aria-pressed', String(on));
+    btn.title = on ? 'カメラ目線：ON（タップでOFF）' : 'カメラ目線：OFF（タップでON）';
+  }
+  updateButton(); // HTML の初期状態（OFF）へ同期
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setEyeContact(!isEyeContact());
+    updateButton();
+  });
+}
+
+// -----------------------------------------------------------------------------
 // 光源設定パネル（💡 アイコン）
 //   指向性光源（太陽）と環境光の色・強度・向き、および光の追従モードを調整する。
 //   各スライダー／カラーピッカー／モードスイッチを view3d.js の LightController 用
@@ -736,6 +761,7 @@ function collectSettings() {
       elevation: camera.elevation,
       distance: camera.distance,
       follow: camera.follow,
+      eyeContact: isEyeContact(),
     },
     physics: isPhysicsEnabled(),
     colors: {
@@ -788,6 +814,7 @@ function applySettings(s) {
   setInputValue('camera-elevation', camera.elevation);
   setInputValue('camera-distance', camera.distance);
   if (camera.follow !== undefined) setCheckboxState('camera-follow-check', camera.follow);
+  if (camera.eyeContact !== undefined) setToggleState('eye-contact-toggle', camera.eyeContact, isEyeContact);
 
   const colors = s.colors || {};
   setInputValue('bg-color', colors.background);
@@ -849,5 +876,6 @@ export function initUI() {
   setupLightPanel();
   setupLightHelperToggle();
   setupCameraControls();
+  setupEyeContactToggle();
   setupSettingsPersistence();
 }

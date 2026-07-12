@@ -28,7 +28,7 @@ import {
   getOrientationAngles,
   renderSwayDebug,
   isSwayDebug,
-} from './sensor.js?v=17';
+} from './sensor.js?v=18';
 
 // 楽曲の読み込み・再生制御・シークバー（audio.js）
 import {
@@ -37,7 +37,7 @@ import {
   updateSeekBar,
   onAudioEnded,
   isSeekScrubbing,
-} from './audio.js?v=17';
+} from './audio.js?v=18';
 
 // -----------------------------------------------------------------------------
 // 設定値
@@ -533,6 +533,8 @@ function applyModel(mesh, path) {
   currentModelPath = path;
   // 新しいモデルに対して揺れもの対象ボーンを再抽出させる（次フレームの ensureSwayBones で再構築）
   swayBones = null;
+  // 新しいモデルで両目ボーンを解決し直させる（次回 resolveEyeBone で再探索）
+  _eyeCache.resolvedFor = null;
   modelReady = true;
   updateDancePlayButton(); // モデルが揃ったので再生ボタンの有効／無効を更新
   console.log(`モデルを読み込みました: ${path}`);
@@ -686,6 +688,70 @@ function getModelHeadFrame(model) {
   _headUp.set(0, 1, 0).applyQuaternion(_headRefQuat);
   _headWorldPos.addScaledVector(_headUp, HEAD_CENTER_OFFSET_Y);
   return _headFrame;
+}
+
+// -----------------------------------------------------------------------------
+// カメラ目線（👀 eye contact）
+//   ON のとき、モデルの「両目」ボーンを毎フレーム回転させて視線を常にカメラへ向ける。
+//   両目ボーンは頭ボーンの子で、その親（頭）ローカル +Z が顔の正面方向という前提
+//   （getModelHeadFrame と同じ。このモデル群は頭ローカル +Z＝顔の向き）。
+//   目→カメラのワールド方向を親ローカル空間へ変換し、+Z をその方向へ写す YXZ 回転の
+//   Yaw/Pitch（Roll=0）を両目ボーンのローカル回転に設定する。人間の目の可動域を超えて
+//   不自然に寄り目・白目にならないよう、Yaw/Pitch はクランプする。
+//   ダンス再生中は mmdHelper.update（＝VMD 適用）の「後」に呼ぶため踊りを消さず上書きできる。
+// -----------------------------------------------------------------------------
+const EYE_YAW_LIMIT   = THREE.MathUtils.degToRad(35); // 左右の可動限界
+const EYE_PITCH_LIMIT = THREE.MathUtils.degToRad(24); // 上下の可動限界
+const _eyeCache = { node: null, resolvedFor: null, restQuat: new THREE.Quaternion() }; // 両目ボーンのキャッシュ（rest=既定ローカル姿勢も保持）
+const _eyeWorldPos   = new THREE.Vector3();     // 両目ボーンのワールド位置（一時）
+const _eyeParentQuat = new THREE.Quaternion();  // 親（頭）の world 回転（一時）
+const _eyeDir        = new THREE.Vector3();     // 目→カメラのワールド方向（一時）
+const _eyeLocalDir   = new THREE.Vector3();     // 同上を親ローカルへ変換した方向（一時）
+const _eyeEuler      = new THREE.Euler();        // Yaw/Pitch → クォータニオン変換用（一時）
+
+// 「両目」ボーンを解決する（無ければ null）。見つかったら既定のローカル姿勢を restQuat へ控える。
+function resolveEyeBone(model, cache) {
+  if (!model) return null;
+  if (cache.resolvedFor === model) return cache.node; // 見つからなかった結果(null)も再探索しない
+
+  let skinned = model.isSkinnedMesh ? model : null;
+  if (!skinned) model.traverse((o) => { if (!skinned && o.isSkinnedMesh && o.skeleton) skinned = o; });
+
+  let node = null;
+  if (skinned && skinned.skeleton && skinned.skeleton.bones.length) {
+    const bones = skinned.skeleton.bones;
+    node = bones.find((b) => (b.name || '') === '両目')
+        || bones.find((b) => (b.name || '').includes('両目'))
+        || bones.find((b) => { const n = (b.name || '').toLowerCase(); return n === 'eyes' || (n.includes('eye') && n.includes('both')); })
+        || null;
+  }
+  cache.node = node;
+  cache.resolvedFor = model;
+  if (node) cache.restQuat.copy(node.quaternion); // OFF 復帰時に戻す既定姿勢を控える
+  return node;
+}
+
+// 両目ボーンをカメラ方向へ向ける（ON 時のみ）。毎フレーム animate() から呼ぶ。
+function updateEyeContact() {
+  if (!eyeContact || !currentModel) return;
+  const eye = resolveEyeBone(currentModel, _eyeCache);
+  if (!eye || !eye.parent) return;
+
+  eye.getWorldPosition(_eyeWorldPos);
+  _eyeDir.copy(camera.position).sub(_eyeWorldPos);
+  if (_eyeDir.lengthSq() < 1e-8) return; // カメラと目がほぼ同一点なら何もしない
+  _eyeDir.normalize();
+
+  // 目→カメラのワールド方向を、両目ボーンの親（頭）ローカル空間へ変換する。
+  eye.parent.getWorldQuaternion(_eyeParentQuat);
+  _eyeLocalDir.copy(_eyeDir).applyQuaternion(_eyeParentQuat.invert());
+
+  // +Z（顔の正面）を localDir へ写す YXZ 回転の Yaw（Y）/Pitch（X）。
+  let yaw   = Math.atan2(_eyeLocalDir.x, _eyeLocalDir.z);
+  let pitch = -Math.asin(clamp(_eyeLocalDir.y, -1, 1));
+  yaw   = clamp(yaw,   -EYE_YAW_LIMIT,   EYE_YAW_LIMIT);
+  pitch = clamp(pitch, -EYE_PITCH_LIMIT, EYE_PITCH_LIMIT);
+  eye.quaternion.setFromEuler(_eyeEuler.set(pitch, yaw, 0, 'YXZ'));
 }
 
 // --- ARCameraController ------------------------------------------------------
@@ -852,6 +918,10 @@ let targetDistance = ORBIT_RADIUS;
 
 // カメラ追従（🎥）。ON のとき updateCameraPose がモデルの facing Yaw を周回角へ加算する。
 let cameraFollow = false;
+
+// カメラ目線（👀）。ON のとき updateEyeContact がモデルの両目ボーンを毎フレーム
+// カメラの方向へ向け、視線が常にこちらを向くようにする。
+let eyeContact = false;
 
 // カメラ角がドラッグ／リセットで変わったことを UI（設定パネル）へ通知するリスナー群。
 // 「ドラッグ時に方位角・仰角の設定値を自動更新」する要件のための仕組み。
@@ -1111,6 +1181,17 @@ export function setCameraElevation(deg) {
 export function setCameraDistance(v)    { targetDistance = clamp(v, MIN_DISTANCE, MAX_DISTANCE); }
 export function setCameraFollow(on)     { cameraFollow = !!on; }
 export function isCameraFollow()        { return cameraFollow; }
+
+// カメラ目線（👀）。ON にするとモデルの視線が常にカメラを向く。
+export function setEyeContact(on) {
+  eyeContact = !!on;
+  // OFF にした瞬間、両目ボーンを既定姿勢へ戻す（踊り中は次フレームの VMD が上書きする）。
+  if (!eyeContact) {
+    const eye = resolveEyeBone(currentModel, _eyeCache);
+    if (eye) eye.quaternion.copy(_eyeCache.restQuat);
+  }
+}
+export function isEyeContact() { return eyeContact; }
 
 // 現在のカメラ設定を UI 同期用に返す（副作用なし）。スライダーの min/max もここで供給する。
 export function getCameraState() {
@@ -1863,6 +1944,11 @@ function animate() {
       }
     }
   }
+
+  // ---- カメラ目線（👀）更新 ---------------------------------------------------
+  //   ダンス（mmdHelper.update）と揺れもの適用の「後」に呼ぶことで、今フレームの
+  //   踊り姿勢の上へ両目ボーンだけを上書きし、視線を常にカメラへ向ける（ON 時のみ）。
+  updateEyeContact();
 
   // ---- 光源更新 ---------------------------------------------------------------
   //   世界固定モードでは同じ位置を再確定するだけ（実質不変）、モデル追従モードでは
