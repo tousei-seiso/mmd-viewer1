@@ -107,6 +107,10 @@
        向いている（view3d.js の setEyeDebug）。 -->
   <button id="eye-debug-toggle" type="button" title="目線チェック線をON/OFF" aria-pressed="false">📏</button>
 
+  <!-- 目線チェックの数値表示（📏 ON のとき view3d.js が毎フレーム更新）。視線とカメラ方向の
+       角度誤差（度）を左右の目それぞれ表示する。0°付近なら瞳は正しくカメラを向いている。 -->
+  <div id="eye-debug-readout" style="display:none">目線誤差  左:—  右:—</div>
+
   <!-- AR 背景用のカメラ映像。THREE.VideoTexture のソースにするためだけの要素で、
        画面には表示しない（style.css で不可視化）。iOS Safari はテクスチャ化のため
        display:none を嫌うので、画面外へ寄せて事実上見えないようにしている。
@@ -202,8 +206,8 @@
     <div class="light-section-title">カメラ目線</div>
     <label class="light-row">
       <span>最大角度</span>
-      <input type="range" id="eye-max-angle" min="0" max="60" step="1" value="20" />
-      <output id="eye-max-angle-val">20°</output>
+      <input type="range" id="eye-max-angle" min="0" max="60" step="1" value="12" />
+      <output id="eye-max-angle-val">12°</output>
     </label>
   </div>
 
@@ -240,6 +244,6 @@
   </div>
 
   <!-- ?v= はキャッシュ破棄用。更新時に番号を上げると確実に最新JSが読み込まれる。 -->
-  <script type="module" src="main.js?v=20"></script>
+  <script type="module" src="main.js?v=21"></script>
 </body>
 </html>

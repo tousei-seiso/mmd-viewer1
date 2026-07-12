@@ -28,7 +28,7 @@ import {
   getOrientationAngles,
   renderSwayDebug,
   isSwayDebug,
-} from './sensor.js?v=20';
+} from './sensor.js?v=21';
 
 // 楽曲の読み込み・再生制御・シークバー（audio.js）
 import {
@@ -37,7 +37,7 @@ import {
   updateSeekBar,
   onAudioEnded,
   isSeekScrubbing,
-} from './audio.js?v=20';
+} from './audio.js?v=21';
 
 // -----------------------------------------------------------------------------
 // 設定値
@@ -703,8 +703,9 @@ function getModelHeadFrame(model) {
 //   不自然に寄り目・白目にならないよう、Yaw/Pitch はクランプする。
 //   ダンス再生中は mmdHelper.update（＝VMD 適用・付与解決）の「後」に呼ぶため踊りを消さず上書きできる。
 // -----------------------------------------------------------------------------
-// 瞳が顔の正面から回転できる最大角（左右・上下共通。⚙️アイコンで可変）。
-let eyeMaxAngleRad = THREE.MathUtils.degToRad(20);
+// 瞳が顔の正面から回転できる最大角（左右・上下共通。🎯アイコンで可変）。
+// アニメ調モデルは白目の開口が狭く、寄せすぎると瞳が開口の外へ回り込むため既定は控えめ。
+let eyeMaxAngleRad = THREE.MathUtils.degToRad(12);
 const HEAD_MAX_ANGLE = THREE.MathUtils.degToRad(30); // 頭がカメラへ向けて回れる最大角（正面から）
 const HEAD_TURN_SMOOTH = 0.2; // 頭追従の slerp 平滑度（0=固定, 1=即時。切替時のポップ抑制）
 let eyeDebug = false; // 📏 チェック線（視線・理想線）の表示 ON/OFF
@@ -714,6 +715,7 @@ const _eyeCache = {
   left: null, right: null, head: null, resolvedFor: null,
   leftRest: new THREE.Quaternion(), rightRest: new THREE.Quaternion(), headRest: new THREE.Quaternion(),
   headModified: false,
+  eyeRadius: 0.5, // 眼球半径（ボーン原点→瞳表面。チェック線の起点を表面に合わせるのに使う）
 };
 const _eyeWorldPos   = new THREE.Vector3();     // 眼球ボーンのワールド位置（一時）
 const _eyeParentQuat = new THREE.Quaternion();  // 親（頭）の world 回転（一時）
@@ -741,6 +743,29 @@ function findEyeBone(bones, jp, enSide) {
       || null;
 }
 
+// 眼球半径（ボーン原点→瞳表面）をバインド姿勢から推定する。眼球ボーンにスキニングされた
+// 頂点群の「ボーン原点からの平均距離」＝おおよその眼球半径。アニメ調でも概ね妥当。
+// バインド逆行列から原点・頂点とも bind 空間で計算するのでアニメ再生中でも安定。
+function estimateEyeRadius(skinned, bone) {
+  try {
+    const bi = skinned.skeleton.bones.indexOf(bone);
+    if (bi < 0) return 0;
+    const g = skinned.geometry;
+    const pos = g.attributes.position, si = g.attributes.skinIndex, sw = g.attributes.skinWeight;
+    if (!pos || !si || !sw) return 0;
+    const bindInv = skinned.skeleton.boneInverses[bi];
+    const origin = new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().copy(bindInv).invert());
+    const v = new THREE.Vector3();
+    let sum = 0, n = 0;
+    for (let i = 0; i < pos.count; i++) {
+      let w = 0;
+      for (let k = 0; k < 4; k++) if (si.getComponent(i, k) === bi) w += sw.getComponent(i, k);
+      if (w > 0.5) { v.fromBufferAttribute(pos, i); sum += v.distanceTo(origin); n++; }
+    }
+    return n ? sum / n : 0;
+  } catch (_) { return 0; }
+}
+
 // 左目・右目・頭（眼球ボーンの親）を解決する。見つかったら既定のローカル姿勢を控える。
 function resolveEyeBones(model, cache) {
   if (!model) return cache;
@@ -764,7 +789,9 @@ function resolveEyeBones(model, cache) {
   if (left)  cache.leftRest.copy(left.quaternion);
   if (right) cache.rightRest.copy(right.quaternion);
   if (head)  cache.headRest.copy(head.quaternion);
-  console.log(`カメラ目線 対象ボーン: 左目=${left ? left.name : 'なし'} / 右目=${right ? right.name : 'なし'} / 頭=${head ? head.name : 'なし'}`);
+  const r = skinned && left ? estimateEyeRadius(skinned, left) : 0;
+  cache.eyeRadius = (r > 0.01) ? r : 0.5; // 推定できなければ既定 0.5
+  console.log(`カメラ目線 対象ボーン: 左目=${left ? left.name : 'なし'} / 右目=${right ? right.name : 'なし'} / 頭=${head ? head.name : 'なし'} / 眼球半径≈${cache.eyeRadius.toFixed(2)}`);
   return cache;
 }
 
@@ -829,16 +856,21 @@ function updateEyeContact() {
 }
 
 // -----------------------------------------------------------------------------
-// チェック線（📏）：瞳の「視線方向」の線（黄）と、瞳→カメラの「理想線」（水色）を描画する。
-//   カメラ目線が正しく効いていれば、視線（黄）はカメラ位置に届き、理想線（水色）と重なる。
-//   モデルに隠れても見えるよう depthTest を切って最前面に描く。
+// チェック線（📏）：瞳「表面」から視線方向へ伸びる線（黄）と、瞳表面マーカー（赤）を描画し、
+//   さらに視点に依存しない「視線とカメラ方向の角度誤差（度）」を画面に数値表示する。
+//   ※ 線の起点は眼球ボーン原点（＝眼球中心＝表面より内側）ではなく、視線方向へ半径分ずらした
+//      「瞳の表面」にする（原点から出ると眼球にめり込んで見えるため）。
+//   カメラ目線が効いていれば黄線はカメラ位置へ真っ直ぐ伸び、誤差は 0° 付近になる。
+//   ただしカメラ視点から見ると「カメラを向く線」は点に潰れるため、数値表示が最も確実な指標。
 // -----------------------------------------------------------------------------
-let _eyeDebugGroup = null;   // 線をまとめる Group（scene 直下）
+let _eyeDebugGroup = null;   // 線・マーカーをまとめる Group（scene 直下）
 let _gazeLines = null;       // 視線（黄）×2（左右）
-let _idealLines = null;      // 理想線（水色）×2（左右）
+let _pupilMarks = null;      // 瞳表面マーカー（赤）×2（左右）
 const _gazeQuat = new THREE.Quaternion();
 const _gazeDir  = new THREE.Vector3();
+const _gazeStart= new THREE.Vector3();
 const _gazeEnd  = new THREE.Vector3();
+const _idealDir = new THREE.Vector3();
 
 function makeDebugLine(color) {
   const geom = new THREE.BufferGeometry();
@@ -853,9 +885,15 @@ function makeDebugLine(color) {
 function ensureEyeDebugLines() {
   if (_eyeDebugGroup) return;
   _eyeDebugGroup = new THREE.Group();
-  _gazeLines  = [makeDebugLine(0xffee00), makeDebugLine(0xffee00)]; // 黄：実際の視線
-  _idealLines = [makeDebugLine(0x00ddff), makeDebugLine(0x00ddff)]; // 水色：瞳→カメラの理想
-  for (const l of [..._gazeLines, ..._idealLines]) _eyeDebugGroup.add(l);
+  _gazeLines  = [makeDebugLine(0xffcc00), makeDebugLine(0xffcc00)]; // 黄：瞳表面→視線方向
+  _pupilMarks = [0, 1].map(() => {
+    const m = new THREE.Mesh(
+      new THREE.SphereGeometry(0.12, 12, 12),
+      new THREE.MeshBasicMaterial({ color: 0xff2255, depthTest: false, depthWrite: false, transparent: true })
+    );
+    m.renderOrder = 1000; m.frustumCulled = false; return m;
+  });
+  for (const o of [..._gazeLines, ..._pupilMarks]) _eyeDebugGroup.add(o);
   scene.add(_eyeDebugGroup);
 }
 
@@ -866,27 +904,45 @@ function setLineEndpoints(line, a, b) {
   line.geometry.attributes.position.needsUpdate = true;
 }
 
+// 数値の角度誤差を画面へ表示（視点非依存の確実な指標）。
+function setEyeDebugReadout(text) {
+  const el = document.getElementById('eye-debug-readout');
+  if (!el) return;
+  if (!eyeDebug) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.textContent = text;
+}
+
 function updateEyeDebugLines(left, right) {
-  if (!eyeDebug) { if (_eyeDebugGroup) _eyeDebugGroup.visible = false; return; }
+  if (!eyeDebug) { if (_eyeDebugGroup) _eyeDebugGroup.visible = false; setEyeDebugReadout(''); return; }
   ensureEyeDebugLines();
   _eyeDebugGroup.visible = true;
+  const radius = _eyeCache.eyeRadius || 0.5;
   const eyes = [left, right];
+  const errs = [null, null];
   for (let i = 0; i < 2; i++) {
     const eye = eyes[i];
     const gaze = _gazeLines[i];
-    const ideal = _idealLines[i];
-    if (!eye || !eye.parent) { gaze.visible = false; ideal.visible = false; continue; }
-    gaze.visible = true; ideal.visible = true;
-    eye.getWorldPosition(_eyeWorldPos);
-    const len = _eyeWorldPos.distanceTo(camera.position); // カメラまでの距離で線長を合わせる
+    const mark = _pupilMarks[i];
+    if (!eye || !eye.parent) { gaze.visible = false; mark.visible = false; continue; }
+    gaze.visible = true; mark.visible = true;
+    eye.getWorldPosition(_eyeWorldPos);                 // 眼球ボーン原点（＝眼球中心）
     // 実際の視線＝親の world 回転 × 目のローカル回転 を +Z に適用した向き。
     eye.parent.getWorldQuaternion(_gazeQuat);
     _gazeQuat.multiply(eye.quaternion);
     _gazeDir.set(0, 0, 1).applyQuaternion(_gazeQuat).normalize();
-    _gazeEnd.copy(_eyeWorldPos).addScaledVector(_gazeDir, len);
-    setLineEndpoints(gaze, _eyeWorldPos, _gazeEnd);       // 黄：瞳中心 → 視線方向
-    setLineEndpoints(ideal, _eyeWorldPos, camera.position); // 水色：瞳中心 → カメラ位置
+    // 起点は「瞳の表面」＝眼球中心から視線方向へ半径分ずらした点。
+    _gazeStart.copy(_eyeWorldPos).addScaledVector(_gazeDir, radius);
+    const len = _gazeStart.distanceTo(camera.position); // カメラまでの距離で線長を合わせる
+    _gazeEnd.copy(_gazeStart).addScaledVector(_gazeDir, len);
+    setLineEndpoints(gaze, _gazeStart, _gazeEnd);       // 黄：瞳表面 → 視線方向
+    mark.position.copy(_gazeStart);                     // 赤：瞳表面の位置
+    // 視線とカメラ方向の角度誤差（度）。
+    _idealDir.copy(camera.position).sub(_gazeStart).normalize();
+    errs[i] = THREE.MathUtils.radToDeg(Math.acos(clamp(_gazeDir.dot(_idealDir), -1, 1)));
   }
+  const fmt = (e) => (e == null ? '—' : `${e.toFixed(1)}°`);
+  setEyeDebugReadout(`目線誤差  左:${fmt(errs[0])}  右:${fmt(errs[1])}`);
 }
 
 // --- ARCameraController ------------------------------------------------------
@@ -1339,7 +1395,11 @@ export function getEyeMaxAngle() { return THREE.MathUtils.radToDeg(eyeMaxAngleRa
 // チェック線（📏）。ON にすると視線（黄）と瞳→カメラの理想線（水色）を描画する。
 export function setEyeDebug(on) {
   eyeDebug = !!on;
-  if (!eyeDebug && _eyeDebugGroup) _eyeDebugGroup.visible = false;
+  if (!eyeDebug) {
+    if (_eyeDebugGroup) _eyeDebugGroup.visible = false;
+    const el = document.getElementById('eye-debug-readout');
+    if (el) el.style.display = 'none';
+  }
 }
 export function isEyeDebug() { return eyeDebug; }
 
