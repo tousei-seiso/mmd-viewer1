@@ -111,7 +111,9 @@
   <!-- まばたき ON/OFF トグル（📏 の下）。ON にすると、モーション非再生時にモデルが
        2〜8 秒に 1 回、0.3〜0.75 秒かけて自然にまばたきする（view3d.js の setBlinkEnabled）。
        既定は ON。モーション再生中は表情を MMDAnimationHelper が制御するため作用しない。 -->
-  <button id="blink-toggle" type="button" title="まばたきをON/OFF" aria-pressed="true">😉</button>
+  <!-- アイコンは「閉じた瞼＋下向きまつげ」を表す自作 SVG（顔ではなく瞼だけ）。線色は
+       currentColor で他アイコンと同じ白を継承する。 -->
+  <button id="blink-toggle" type="button" title="まばたきをON/OFF" aria-pressed="true"><svg class="blink-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 10 Q12 16 20 10"/><path d="M7.6 12.6 6.5 15.3"/><path d="M12 13 12 16"/><path d="M16.4 12.6 17.5 15.3"/></svg></button>
 
   <!-- 目線チェックの数値表示（📏 ON のとき view3d.js が毎フレーム更新）。視線とカメラ方向の
        角度誤差（度）を左右の目それぞれ表示する。0°付近なら瞳は正しくカメラを向いている。 -->
