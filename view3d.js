@@ -2152,6 +2152,11 @@ const BLINK_MIN_INTERVAL = 2.0;   // 次のまばたきまでの最短間隔（�
 const BLINK_MAX_INTERVAL = 8.0;   //  〃                最長間隔（秒）
 const BLINK_MIN_DURATION = 0.3;   // まばたき 1 回の最短所要（秒）
 const BLINK_MAX_DURATION = 0.75;  //  〃            最長所要（秒）
+// 間隔の偏り指数。人間のまばたきは「短い間隔ほど高頻度」で、2〜8秒に一様ではなく下端へ
+// 偏る。u^k（u は一様乱数）で下端へ寄せると、間隔の平均は min +(max-min)/(k+1)。k=4 なら
+// 平均≈3.2秒、開閉時間（平均0.525秒）込みで約16回/分となり、「2〜8秒に1回」かつ
+// 「15〜20回/分（＝短い瞬きが多い分布）」を同時に満たす。k=1 だと一様＝平均5秒≒11回/分。
+const BLINK_INTERVAL_SKEW = 4;
 
 // まばたき機能の ON/OFF（😉 アイコンで切替）。既定 ON。
 let blinkEnabled = true;
@@ -2169,6 +2174,13 @@ const _blink = {
 
 function randRange(min, max) { return min + Math.random() * (max - min); }
 
+// 次のまばたきまでの間隔（秒）。2〜8秒の範囲を保ちつつ、u^SKEW で下端（短い間隔）へ
+// 偏らせる＝短い間隔の瞬きほど高頻度にする。これで平均約3.2秒→約16回/分になる。
+function nextBlinkInterval() {
+  const u = Math.pow(Math.random(), BLINK_INTERVAL_SKEW);
+  return BLINK_MIN_INTERVAL + (BLINK_MAX_INTERVAL - BLINK_MIN_INTERVAL) * u;
+}
+
 // 現在のモデルから「まばたき」モーフを解決する（モデル差し替え時に一度だけ）。
 function resolveBlinkMorph(model, nowSec) {
   if (_blink.resolvedFor === model) return;
@@ -2177,7 +2189,7 @@ function resolveBlinkMorph(model, nowSec) {
   _blink.index = -1;
   _blink.phase = 'idle';
   _blink.applied = false;
-  _blink.nextAt = nowSec + randRange(BLINK_MIN_INTERVAL, BLINK_MAX_INTERVAL);
+  _blink.nextAt = nowSec + nextBlinkInterval();
 
   let skinned = model && model.isSkinnedMesh ? model : null;
   if (!skinned && model) model.traverse((o) => { if (!skinned && o.isSkinnedMesh) skinned = o; });
@@ -2216,7 +2228,7 @@ function updateBlink(nowSec) {
   if (t >= 1) {
     influences[_blink.index] = 0;                 // 開き切って終了
     _blink.phase = 'idle';
-    _blink.nextAt = nowSec + randRange(BLINK_MIN_INTERVAL, BLINK_MAX_INTERVAL);
+    _blink.nextAt = nowSec + nextBlinkInterval();
     _blink.applied = true;
     return;
   }
