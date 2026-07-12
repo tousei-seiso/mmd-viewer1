@@ -2157,6 +2157,12 @@ const BLINK_MAX_DURATION = 0.75;  //  〃            最長所要（秒）
 // 平均≈3.2秒、開閉時間（平均0.525秒）込みで約16回/分となり、「2〜8秒に1回」かつ
 // 「15〜20回/分（＝短い瞬きが多い分布）」を同時に満たす。k=1 だと一様＝平均5秒≒11回/分。
 const BLINK_INTERVAL_SKEW = 4;
+// モーション再生中に自前の瞬きを差し込んでよい「目が大きく開いている」判定の閾値。
+// VMD が作る まばたき／笑い／ウィンク等の閉じ量がいずれもこの値未満（＝85%以上開いて
+// いる）ときだけ、瞬きを重ねる。値を小さくするほど「しっかり開いている」時のみに限る。
+const BLINK_OPEN_MAX = 0.15;
+// 目を閉じる系モーフ名の部分一致パターン（VMD の閉じ表情を邪魔しないための検出用）。
+const BLINK_CLOSE_PATTERNS = ['まばたき', '瞬き', '瞬', '笑い', 'ウィンク', 'ウインク', 'ｳｨﾝｸ', '目を細', 'wink', 'blink'];
 
 // まばたき機能の ON/OFF（😉 アイコンで切替）。既定 ON。
 let blinkEnabled = true;
@@ -2165,11 +2171,12 @@ const _blink = {
   resolvedFor: null, // モーフ解決済みモデル（差し替え検知）
   mesh: null,        // 「まばたき」モーフを持つ SkinnedMesh
   index: -1,         // morphTargetInfluences 内のインデックス（-1=見つからない）
+  closeIdx: [],      // 目を閉じる他モーフ（笑い・ウィンク等）のインデックス群（開眼判定用）
   phase: 'idle',     // 'idle'（待機）| 'active'（開閉中）
   nextAt: 0,         // 次にまばたきを始める時刻（秒, performance.now 基準）
   startAt: 0,        // 今回のまばたき開始時刻（秒）
   duration: 0,       // 今回の所要（秒）
-  applied: false,    // 直近フレームでモーフへ値を書いたか（引き継ぎ時のクリア判定）
+  written: 0,        // 今フレーム「まばたき」モーフへ加算した自前の寄与（次フレームで戻す）
 };
 
 function randRange(min, max) { return min + Math.random() * (max - min); }
@@ -2187,38 +2194,78 @@ function resolveBlinkMorph(model, nowSec) {
   _blink.resolvedFor = model;
   _blink.mesh = null;
   _blink.index = -1;
+  _blink.closeIdx = [];
   _blink.phase = 'idle';
-  _blink.applied = false;
+  _blink.written = 0;
   _blink.nextAt = nowSec + nextBlinkInterval();
 
   let skinned = model && model.isSkinnedMesh ? model : null;
   if (!skinned && model) model.traverse((o) => { if (!skinned && o.isSkinnedMesh) skinned = o; });
   let hitName = null;
-  if (skinned && skinned.morphTargetDictionary && skinned.morphTargetInfluences) {
+  const dict = skinned && skinned.morphTargetDictionary;
+  if (dict && skinned.morphTargetInfluences) {
     for (const name of BLINK_MORPH_NAMES) {
-      if (name in skinned.morphTargetDictionary) {
+      if (name in dict) {
         _blink.mesh = skinned;
-        _blink.index = skinned.morphTargetDictionary[name];
+        _blink.index = dict[name];
         hitName = name;
         break;
       }
     }
+    // 目を閉じる他モーフ（笑い・ウィンク等）を集める。再生中の開眼判定に使う（自分が
+    // 動かす「まばたき」本体は base で見るので除外する）。
+    if (_blink.index >= 0) {
+      for (const mName in dict) {
+        const i = dict[mName];
+        if (i === _blink.index) continue;
+        if (BLINK_CLOSE_PATTERNS.some((p) => mName.includes(p))) _blink.closeIdx.push(i);
+      }
+    }
   }
-  console.log(`まばたき: 対象モーフ=${hitName || 'なし'}`);
+  console.log(`まばたき: 対象モーフ=${hitName || 'なし'} / 開眼判定の閉じ系モーフ=${_blink.closeIdx.length}個`);
 }
 
-// 毎フレームのまばたき更新。モーション再生中は呼ばない（呼び出し側で判定する）。
-//   待機中は「まばたき」モーフを 0 に保ち（＝目を開く）、間隔が来たら開閉を 1 回行う。
-function updateBlink(nowSec) {
+// 目が「大きく開いている」かの判定。基準（VMD）の まばたき 値 baseBlink と、目を閉じる
+// 他モーフ（笑い・ウィンク等）の現在値がいずれも閾値未満なら開いているとみなす。
+function eyesWideOpen(baseBlink, influences) {
+  if (baseBlink >= BLINK_OPEN_MAX) return false;
+  for (const ci of _blink.closeIdx) {
+    if (influences[ci] >= BLINK_OPEN_MAX) return false;
+  }
+  return true;
+}
+
+// helper.update の直前に呼び、前フレームで自前まばたきが「まばたき」モーフへ加算した寄与を
+// 取り除く。これでトラック有無に関わらず、helper 適用後の influences[index] が VMD の素の
+// 値（＝base）になり、開眼判定と加算がクリーンに行える。
+function clearBlinkContribution() {
+  if (_blink.written !== 0 && _blink.mesh && _blink.index >= 0) {
+    const inf = _blink.mesh.morphTargetInfluences;
+    inf[_blink.index] = clamp(inf[_blink.index] - _blink.written, 0, 1);
+  }
+  _blink.written = 0;
+}
+
+// 毎フレームのまばたき更新。
+//   duringMotion=false（非再生）：待機中は「まばたき」を 0 に保ち（目を開く）、間隔が来たら開閉。
+//   duringMotion=true （再生中）：VMD の表情を壊さないため base（VMD の素の まばたき 値）へ
+//     加算で重ねる。開始は「目が大きく開いている」フレームに限る（閉じ表情は邪魔しない）。
+function updateBlink(nowSec, duringMotion) {
   if (!currentModel) return;
   resolveBlinkMorph(currentModel, nowSec);
   if (_blink.index < 0 || !_blink.mesh) return;
   const influences = _blink.mesh.morphTargetInfluences;
+  const idx = _blink.index;
+  // VMD が今フレーム設定した素の値。再生中は helper.update 直前に寄与を戻し済みなので
+  // influences[idx] がそのまま base。非再生時は VMD が動かないので base=0（開いた状態）。
+  const base = duringMotion ? influences[idx] : 0;
 
   if (_blink.phase === 'idle') {
-    influences[_blink.index] = 0; // 待機中は必ず目を開いた状態に保つ
-    _blink.applied = true;
+    if (!duringMotion) influences[idx] = 0; // 非再生時は目を開いた状態に保つ
+    _blink.written = 0;
     if (nowSec < _blink.nextAt) return;
+    // 再生中は「目が大きく開いている」ときだけ開始（そうでなければ開くまで待つ＝nextAt 据え置き）。
+    if (duringMotion && !eyesWideOpen(base, influences)) return;
     _blink.phase = 'active';
     _blink.startAt = nowSec;
     _blink.duration = randRange(BLINK_MIN_DURATION, BLINK_MAX_DURATION);
@@ -2226,21 +2273,22 @@ function updateBlink(nowSec) {
 
   const t = (nowSec - _blink.startAt) / _blink.duration;
   if (t >= 1) {
-    influences[_blink.index] = 0;                 // 開き切って終了
+    influences[idx] = base;         // 開き切って終了（VMD 値 or 0 へ戻す）
+    _blink.written = 0;
     _blink.phase = 'idle';
     _blink.nextAt = nowSec + nextBlinkInterval();
-    _blink.applied = true;
     return;
   }
-  influences[_blink.index] = Math.sin(t * Math.PI); // 0→1→0 で滑らかに閉じて開く
-  _blink.applied = true;
+  const curve = Math.sin(t * Math.PI);            // 0→1→0 で滑らかに閉じて開く
+  _blink.written = curve;
+  influences[idx] = clamp(base + curve, 0, 1);    // VMD の閉じ表情を消さないよう加算で重ねる
 }
 
-// モーション再生（helper が表情を制御）へ切り替わるときに呼ぶ。開閉状態だけを
-// 手放しにリセットする（モーフ値は helper が上書きするのでここでは触らない）。
+// まばたきを中断する（シーク中・機能 OFF など）。開閉状態と自前寄与をリセットする。
+//   モーフ値は helper／非再生パスが次フレームで整えるので、ここでは触らない。
 function suspendBlink() {
   _blink.phase = 'idle';
-  _blink.applied = false;
+  _blink.written = 0;
 }
 
 // まばたき機能の ON/OFF。OFF にした瞬間、開閉途中でも目を開いた状態へ戻す。
@@ -2282,6 +2330,9 @@ function animate() {
   //   ※ シーク中(seekScrubbing)は applySeek 側で姿勢を当てるため、ここでは同期しない。
   let danceUpdatedThisFrame = false;
   if (danceState.active && danceState.playing && !isSeekScrubbing() && danceState.mesh === currentModel && danceState.mixer && danceState.audio) {
+    // helper が VMD 表情を書き込む前に、前フレームの自前まばたき寄与を戻しておく。
+    // これで helper 適用後の「まばたき」モーフ値が VMD の素の値になり、開眼判定できる。
+    clearBlinkContribution();
     const delta = danceState.audio.currentTime - danceState.mixer.time;
     mmdHelper.update(delta);
     danceUpdatedThisFrame = true;
@@ -2332,10 +2383,10 @@ function animate() {
   lightController.update(currentModel);
 
   // ---- 自然なまばたき ---------------------------------------------------------
-  //   モーション（VMD）が今フレーム姿勢・表情を書いていない＝再生中でないときだけ、
-  //   「まばたき」モーフを自前で動かす。再生中は helper が表情を制御するので手放す。
-  //   シーク中は applySeek 側が表情を当てるため、ここでは触らない。
-  if (blinkEnabled && !danceUpdatedThisFrame && !isSeekScrubbing()) updateBlink(nowSec);
+  //   ON のときは、非再生時はもちろん、モーション再生中でも「目が大きく開いている」フレーム
+  //   に限って瞬きを重ねる（updateBlink 内で判定）。再生中は VMD の素の表情へ加算するので
+  //   笑い・ウィンク等の閉じ表情は邪魔しない。シーク中は applySeek が表情を当てるため触らない。
+  if (blinkEnabled && !isSeekScrubbing()) updateBlink(nowSec, danceUpdatedThisFrame);
   else suspendBlink();
 
   // [一時診断] 加速度が実際に届いているか／対象ボーン数を画面に常時表示（sensor.js）。
