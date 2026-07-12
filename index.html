@@ -108,6 +108,11 @@
        （view3d.js の setEyeDebug）。 -->
   <button id="eye-debug-toggle" type="button" title="目線チェック線をON/OFF" aria-pressed="false">📏</button>
 
+  <!-- まばたき ON/OFF トグル（📏 の下）。ON にすると、モーション非再生時にモデルが
+       2〜8 秒に 1 回、0.3〜0.75 秒かけて自然にまばたきする（view3d.js の setBlinkEnabled）。
+       既定は ON。モーション再生中は表情を MMDAnimationHelper が制御するため作用しない。 -->
+  <button id="blink-toggle" type="button" title="まばたきをON/OFF" aria-pressed="true">😉</button>
+
   <!-- 目線チェックの数値表示（📏 ON のとき view3d.js が毎フレーム更新）。視線とカメラ方向の
        角度誤差（度）を左右の目それぞれ表示する。0°付近なら瞳は正しくカメラを向いている。 -->
   <div id="eye-debug-readout" style="display:none">目線誤差  左:—  右:—</div>

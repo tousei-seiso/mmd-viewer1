@@ -738,6 +738,38 @@ body {
   background: var(--btn-bg-on);
 }
 
+/* まばたきトグル（2 列目の 11 段目、見た目は共通） */
+#blink-toggle {
+  position: fixed;
+  /* 2 列目の 11 段目（チェック線の 1 段下） */
+  top: calc(var(--safe-top) + var(--btn-step) * 10);
+  right: calc(var(--safe-right) + var(--btn-step) * 1);
+  z-index: 20;
+  width: var(--btn-size);
+  height: var(--btn-size);
+  border: none;
+  border-radius: 50%;
+  background: var(--btn-bg);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.2s ease, transform 0.1s ease;
+}
+
+#blink-toggle:active {
+  transform: scale(0.92);
+}
+
+#blink-toggle[aria-pressed='true'] {
+  background: var(--btn-bg-on);
+}
+
 /* AR 背景用のカメラ映像。VideoTexture のソースにするだけで画面には出さない。
    iOS Safari は display:none の <video> をテクスチャ化できないことがあるため、
    表示は残したまま 1px・不可視・タップ不可にして事実上隠す。 */

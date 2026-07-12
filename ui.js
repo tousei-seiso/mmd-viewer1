@@ -57,6 +57,8 @@ import {
   onCameraChange,
   setEyeContact,
   isEyeContact,
+  setBlinkEnabled,
+  isBlinkEnabled,
   setEyeMaxAngle,
   getEyeMaxAngle,
   setEyeDebug,
@@ -523,6 +525,29 @@ function setupEyeContactToggle() {
 }
 
 // -----------------------------------------------------------------------------
+// まばたきトグル（😉 アイコン）
+//   ON にすると、モーション非再生時にモデルが 2〜8 秒に 1 回、0.3〜0.75 秒かけて自然に
+//   まばたきする（view3d.js の setBlinkEnabled）。既定 ON。パネルを持たない単純なトグル。
+// -----------------------------------------------------------------------------
+function setupBlinkToggle() {
+  const btn = document.getElementById('blink-toggle');
+  if (!btn) return;
+
+  function updateButton() {
+    const on = isBlinkEnabled();
+    btn.setAttribute('aria-pressed', String(on));
+    btn.title = on ? 'まばたき：ON（タップでOFF）' : 'まばたき：OFF（タップでON）';
+  }
+  updateButton(); // HTML の初期状態（ON）へ同期
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setBlinkEnabled(!isBlinkEnabled());
+    updateButton();
+  });
+}
+
+// -----------------------------------------------------------------------------
 // カメラ目線の角度設定パネル（🎯 アイコン）
 //   瞳が顔の正面から回転できる最大角度（度）をスライダーで調整する。パネルの開閉は
 //   カメラパネルと同じ流儀（外側クリックで閉じる／同じ位置の他パネルとは排他）。
@@ -834,6 +859,7 @@ function collectSettings() {
       eyeMaxAngle: getEyeMaxAngle(),
     },
     physics: isPhysicsEnabled(),
+    blink: isBlinkEnabled(),
     colors: {
       background: getBgColor(),
       floor: getFloorColor(),
@@ -893,6 +919,8 @@ function applySettings(s) {
 
   // 物理は非同期（Ammo.js のロードを伴う）。現在と異なるときだけボタンをクリックして切り替える。
   if (s.physics !== undefined) setToggleState('physics-toggle', s.physics, isPhysicsEnabled);
+
+  if (s.blink !== undefined) setToggleState('blink-toggle', s.blink, isBlinkEnabled);
 }
 
 function setupSettingsPersistence() {
@@ -948,6 +976,7 @@ export function initUI() {
   setupLightHelperToggle();
   setupCameraControls();
   setupEyeContactToggle();
+  setupBlinkToggle();
   setupEyeSettings();
   setupEyeDebugToggle();
   setupSettingsPersistence();

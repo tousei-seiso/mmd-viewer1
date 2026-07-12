@@ -2153,6 +2153,9 @@ const BLINK_MAX_INTERVAL = 8.0;   //  〃                最長間隔（秒）
 const BLINK_MIN_DURATION = 0.3;   // まばたき 1 回の最短所要（秒）
 const BLINK_MAX_DURATION = 0.75;  //  〃            最長所要（秒）
 
+// まばたき機能の ON/OFF（😉 アイコンで切替）。既定 ON。
+let blinkEnabled = true;
+
 const _blink = {
   resolvedFor: null, // モーフ解決済みモデル（差し替え検知）
   mesh: null,        // 「まばたき」モーフを持つ SkinnedMesh
@@ -2227,6 +2230,16 @@ function suspendBlink() {
   _blink.phase = 'idle';
   _blink.applied = false;
 }
+
+// まばたき機能の ON/OFF。OFF にした瞬間、開閉途中でも目を開いた状態へ戻す。
+export function setBlinkEnabled(on) {
+  blinkEnabled = !!on;
+  if (!blinkEnabled && _blink.mesh && _blink.index >= 0) {
+    _blink.mesh.morphTargetInfluences[_blink.index] = 0;
+  }
+  suspendBlink();
+}
+export function isBlinkEnabled() { return blinkEnabled; }
 
 // -----------------------------------------------------------------------------
 // 描画ループ
@@ -2310,7 +2323,7 @@ function animate() {
   //   モーション（VMD）が今フレーム姿勢・表情を書いていない＝再生中でないときだけ、
   //   「まばたき」モーフを自前で動かす。再生中は helper が表情を制御するので手放す。
   //   シーク中は applySeek 側が表情を当てるため、ここでは触らない。
-  if (!danceUpdatedThisFrame && !isSeekScrubbing()) updateBlink(nowSec);
+  if (blinkEnabled && !danceUpdatedThisFrame && !isSeekScrubbing()) updateBlink(nowSec);
   else suspendBlink();
 
   // [一時診断] 加速度が実際に届いているか／対象ボーン数を画面に常時表示（sensor.js）。
