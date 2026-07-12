@@ -2157,6 +2157,10 @@ const BLINK_MAX_DURATION = 0.75;  //  〃            最長所要（秒）
 // 平均≈3.2秒、開閉時間（平均0.525秒）込みで約16回/分となり、「2〜8秒に1回」かつ
 // 「15〜20回/分（＝短い瞬きが多い分布）」を同時に満たす。k=1 だと一様＝平均5秒≒11回/分。
 const BLINK_INTERVAL_SKEW = 4;
+// 所要時間の偏り指数。1 回の開閉時間も「短い時間ほど高頻度」で、0.3〜0.75秒に一様ではなく
+// 下端へ偏らせる。u^k で下端へ寄せると平均は min +(max-min)/(k+1)。k=3 なら平均≈0.41秒
+// （素早い瞬きが多く、たまにゆっくり）。k=1 だと一様＝平均0.525秒。
+const BLINK_DURATION_SKEW = 3;
 // モーション再生中に自前の瞬きを差し込んでよい「目が大きく開いている」判定の閾値。
 // VMD が作る まばたき／笑い／ウィンク等の閉じ量がいずれもこの値未満（＝85%以上開いて
 // いる）ときだけ、瞬きを重ねる。値を小さくするほど「しっかり開いている」時のみに限る。
@@ -2179,13 +2183,20 @@ const _blink = {
   written: 0,        // 今フレーム「まばたき」モーフへ加算した自前の寄与（次フレームで戻す）
 };
 
-function randRange(min, max) { return min + Math.random() * (max - min); }
+// [min,max] 内で下端（小さい値）へ偏らせた乱数。u^skew（u は一様乱数）で min 付近を
+// 高頻度にする。平均は min +(max-min)/(skew+1)。skew=1 なら一様分布。
+function skewedRand(min, max, skew) {
+  return min + (max - min) * Math.pow(Math.random(), skew);
+}
 
-// 次のまばたきまでの間隔（秒）。2〜8秒の範囲を保ちつつ、u^SKEW で下端（短い間隔）へ
-// 偏らせる＝短い間隔の瞬きほど高頻度にする。これで平均約3.2秒→約16回/分になる。
+// 次のまばたきまでの間隔（秒）。2〜8秒の範囲を保ちつつ短い間隔へ偏らせる（平均≈3.2秒→約16回/分）。
 function nextBlinkInterval() {
-  const u = Math.pow(Math.random(), BLINK_INTERVAL_SKEW);
-  return BLINK_MIN_INTERVAL + (BLINK_MAX_INTERVAL - BLINK_MIN_INTERVAL) * u;
+  return skewedRand(BLINK_MIN_INTERVAL, BLINK_MAX_INTERVAL, BLINK_INTERVAL_SKEW);
+}
+
+// 1 回の瞬きの所要時間（秒）。0.3〜0.75秒の範囲を保ちつつ短い時間へ偏らせる（平均≈0.41秒）。
+function nextBlinkDuration() {
+  return skewedRand(BLINK_MIN_DURATION, BLINK_MAX_DURATION, BLINK_DURATION_SKEW);
 }
 
 // 現在のモデルから「まばたき」モーフを解決する（モデル差し替え時に一度だけ）。
@@ -2268,7 +2279,7 @@ function updateBlink(nowSec, duringMotion) {
     if (duringMotion && !eyesWideOpen(base, influences)) return;
     _blink.phase = 'active';
     _blink.startAt = nowSec;
-    _blink.duration = randRange(BLINK_MIN_DURATION, BLINK_MAX_DURATION);
+    _blink.duration = nextBlinkDuration();
   }
 
   const t = (nowSec - _blink.startAt) / _blink.duration;
