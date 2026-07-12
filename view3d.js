@@ -2165,8 +2165,15 @@ const BLINK_DURATION_SKEW = 3;
 // VMD が作る まばたき／笑い／ウィンク等の閉じ量がいずれもこの値未満（＝85%以上開いて
 // いる）ときだけ、瞬きを重ねる。値を小さくするほど「しっかり開いている」時のみに限る。
 const BLINK_OPEN_MAX = 0.15;
-// 目を閉じる系モーフ名の部分一致パターン（VMD の閉じ表情を邪魔しないための検出用）。
-const BLINK_CLOSE_PATTERNS = ['まばたき', '瞬き', '瞬', '笑い', 'ウィンク', 'ウインク', 'ｳｨﾝｸ', '目を細', 'wink', 'blink'];
+// 目（瞼）を閉じる系モーフ名の部分一致パターン（VMD の閉じ表情を邪魔しないための検出用）。
+//   ・笑顔で目を細める/閉じる：笑い・笑・にっこり・にこり・∧・▲（∧２/▲系も部分一致で拾う）
+//   ・ウィンク：ウィンク・ウインク・ｳｨﾝｸ（右/２なども部分一致）
+//   ・半目/瞑り：じと・目を細・目つ（目つぶり）・瞑
+//   ※「瞳小/瞳大/瞳縦長」等の“瞳（黒目）サイズ”は瞼を閉じないので意図的に除外している。
+const BLINK_CLOSE_PATTERNS = [
+  'まばたき', '瞬', '笑', 'にっこり', 'にこり', 'ウィンク', 'ウインク', 'ｳｨﾝｸ',
+  '∧', '▲', 'じと', '目を細', '目つ', '瞑', 'wink', 'blink',
+];
 
 // まばたき機能の ON/OFF（😉 アイコンで切替）。既定 ON。
 let blinkEnabled = true;
@@ -2258,25 +2265,34 @@ function clearBlinkContribution() {
 }
 
 // 毎フレームのまばたき更新。
-//   duringMotion=false（非再生）：待機中は「まばたき」を 0 に保ち（目を開く）、間隔が来たら開閉。
-//   duringMotion=true （再生中）：VMD の表情を壊さないため base（VMD の素の まばたき 値）へ
-//     加算で重ねる。開始は「目が大きく開いている」フレームに限る（閉じ表情は邪魔しない）。
-function updateBlink(nowSec, duringMotion) {
+//   respectPose … VMD の表情ポーズが効いているか（再生中／一時停止中／終了後の保持ポーズ）。
+//                 true のときは まばたき を 0 に強制せず、VMD の素の値（base）へ加算で重ねる。
+//   motionDriving … 今フレーム helper が表情を書いたか（＝再生中）。false かつ respectPose の
+//                 ときは helper が動かさないので、ここで自前寄与を戻して base を素の値に直す。
+//   ★開始判定（目が大きく開いているか）は「再生中か否かに関わらず」常に行う。これにより、
+//     モーション終了後に「笑い」等で目を閉じたまま保持されたポーズでも、閉じた瞳の上に
+//     まばたきを重ねてしまう異常（閉じた瞳が動く）を防ぐ。
+function updateBlink(nowSec, respectPose, motionDriving) {
   if (!currentModel) return;
   resolveBlinkMorph(currentModel, nowSec);
   if (_blink.index < 0 || !_blink.mesh) return;
   const influences = _blink.mesh.morphTargetInfluences;
   const idx = _blink.index;
-  // VMD が今フレーム設定した素の値。再生中は helper.update 直前に寄与を戻し済みなので
-  // influences[idx] がそのまま base。非再生時は VMD が動かないので base=0（開いた状態）。
-  const base = duringMotion ? influences[idx] : 0;
+
+  // 保持ポーズ中（active だが再生停止）は helper が動かさないため、ここで前フレームの自前
+  // 寄与を戻して influences[idx] を VMD の素の値へ戻す（再生中は helper.update 直前に戻し済み）。
+  if (respectPose && !motionDriving) clearBlinkContribution();
+
+  // base＝VMD が意図している素の まばたき 値。ポーズが効いていなければ 0（＝開いた状態）。
+  const base = respectPose ? influences[idx] : 0;
 
   if (_blink.phase === 'idle') {
-    if (!duringMotion) influences[idx] = 0; // 非再生時は目を開いた状態に保つ
+    if (!respectPose) influences[idx] = 0; // 真の休止時のみ、目を開いた状態に保つ
     _blink.written = 0;
     if (nowSec < _blink.nextAt) return;
-    // 再生中は「目が大きく開いている」ときだけ開始（そうでなければ開くまで待つ＝nextAt 据え置き）。
-    if (duringMotion && !eyesWideOpen(base, influences)) return;
+    // 「目が大きく開いている」ときだけ開始する（閉じ表情＝笑い/ウィンク/∧ 等は邪魔しない）。
+    // 開いていなければ開くまで待つ（nextAt は据え置き）。
+    if (!eyesWideOpen(base, influences)) return;
     _blink.phase = 'active';
     _blink.startAt = nowSec;
     _blink.duration = nextBlinkDuration();
@@ -2394,10 +2410,12 @@ function animate() {
   lightController.update(currentModel);
 
   // ---- 自然なまばたき ---------------------------------------------------------
-  //   ON のときは、非再生時はもちろん、モーション再生中でも「目が大きく開いている」フレーム
-  //   に限って瞬きを重ねる（updateBlink 内で判定）。再生中は VMD の素の表情へ加算するので
-  //   笑い・ウィンク等の閉じ表情は邪魔しない。シーク中は applySeek が表情を当てるため触らない。
-  if (blinkEnabled && !isSeekScrubbing()) updateBlink(nowSec, danceUpdatedThisFrame);
+  //   ON のときは、休止時・再生中・終了後の保持ポーズを問わず「目が大きく開いている」フレーム
+  //   に限って瞬きを重ねる（updateBlink 内で判定）。VMD の素の表情へ加算するので、笑い・ウィンク
+  //   等で目を閉じている間は瞬きを差し込まない。シーク中は applySeek が表情を当てるため触らない。
+  //   respectPose＝VMD 表情が効いている状態（再生中／一時停止／終了後の保持ポーズ）。
+  const respectPose = danceState.active && danceState.mesh === currentModel;
+  if (blinkEnabled && !isSeekScrubbing()) updateBlink(nowSec, respectPose, danceUpdatedThisFrame);
   else suspendBlink();
 
   // [一時診断] 加速度が実際に届いているか／対象ボーン数を画面に常時表示（sensor.js）。
