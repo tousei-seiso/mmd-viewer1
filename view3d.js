@@ -535,6 +535,8 @@ function applyModel(mesh, path) {
   swayBones = null;
   // 新しいモデルで左目・右目ボーンを解決し直させる（次回 resolveEyeBones で再探索）
   _eyeCache.resolvedFor = null;
+  // 新しいモデルで「まばたき」モーフを解決し直させる（次回 updateBlink で再探索）
+  _blink.resolvedFor = null;
   modelReady = true;
   updateDancePlayButton(); // モデルが揃ったので再生ボタンの有効／無効を更新
   console.log(`モデルを読み込みました: ${path}`);
@@ -2138,6 +2140,95 @@ export async function listMotions() {
 }
 
 // -----------------------------------------------------------------------------
+// 自然なまばたき（モーション非再生時のみ）
+//   人間は無意識に 2〜8 秒に 1 回まばたきし、1 回の開閉に 0.3〜0.75 秒かかる。
+//   これを MMD の表情モーフ「まばたき」で再現する。モーション再生中は
+//   MMDAnimationHelper が表情モーフを制御するため、こちらは一切手を出さない
+//   （呼び出し側 animate() の danceUpdatedThisFrame でゲートする）。
+//   1 回の開閉は sin 半周期（0→1→0）で滑らかに閉じて開く。
+// -----------------------------------------------------------------------------
+const BLINK_MORPH_NAMES  = ['まばたき', '瞬き', 'まばたき2', 'blink', 'Blink']; // 探索順（先勝ち）
+const BLINK_MIN_INTERVAL = 2.0;   // 次のまばたきまでの最短間隔（秒）
+const BLINK_MAX_INTERVAL = 8.0;   //  〃                最長間隔（秒）
+const BLINK_MIN_DURATION = 0.3;   // まばたき 1 回の最短所要（秒）
+const BLINK_MAX_DURATION = 0.75;  //  〃            最長所要（秒）
+
+const _blink = {
+  resolvedFor: null, // モーフ解決済みモデル（差し替え検知）
+  mesh: null,        // 「まばたき」モーフを持つ SkinnedMesh
+  index: -1,         // morphTargetInfluences 内のインデックス（-1=見つからない）
+  phase: 'idle',     // 'idle'（待機）| 'active'（開閉中）
+  nextAt: 0,         // 次にまばたきを始める時刻（秒, performance.now 基準）
+  startAt: 0,        // 今回のまばたき開始時刻（秒）
+  duration: 0,       // 今回の所要（秒）
+  applied: false,    // 直近フレームでモーフへ値を書いたか（引き継ぎ時のクリア判定）
+};
+
+function randRange(min, max) { return min + Math.random() * (max - min); }
+
+// 現在のモデルから「まばたき」モーフを解決する（モデル差し替え時に一度だけ）。
+function resolveBlinkMorph(model, nowSec) {
+  if (_blink.resolvedFor === model) return;
+  _blink.resolvedFor = model;
+  _blink.mesh = null;
+  _blink.index = -1;
+  _blink.phase = 'idle';
+  _blink.applied = false;
+  _blink.nextAt = nowSec + randRange(BLINK_MIN_INTERVAL, BLINK_MAX_INTERVAL);
+
+  let skinned = model && model.isSkinnedMesh ? model : null;
+  if (!skinned && model) model.traverse((o) => { if (!skinned && o.isSkinnedMesh) skinned = o; });
+  let hitName = null;
+  if (skinned && skinned.morphTargetDictionary && skinned.morphTargetInfluences) {
+    for (const name of BLINK_MORPH_NAMES) {
+      if (name in skinned.morphTargetDictionary) {
+        _blink.mesh = skinned;
+        _blink.index = skinned.morphTargetDictionary[name];
+        hitName = name;
+        break;
+      }
+    }
+  }
+  console.log(`まばたき: 対象モーフ=${hitName || 'なし'}`);
+}
+
+// 毎フレームのまばたき更新。モーション再生中は呼ばない（呼び出し側で判定する）。
+//   待機中は「まばたき」モーフを 0 に保ち（＝目を開く）、間隔が来たら開閉を 1 回行う。
+function updateBlink(nowSec) {
+  if (!currentModel) return;
+  resolveBlinkMorph(currentModel, nowSec);
+  if (_blink.index < 0 || !_blink.mesh) return;
+  const influences = _blink.mesh.morphTargetInfluences;
+
+  if (_blink.phase === 'idle') {
+    influences[_blink.index] = 0; // 待機中は必ず目を開いた状態に保つ
+    _blink.applied = true;
+    if (nowSec < _blink.nextAt) return;
+    _blink.phase = 'active';
+    _blink.startAt = nowSec;
+    _blink.duration = randRange(BLINK_MIN_DURATION, BLINK_MAX_DURATION);
+  }
+
+  const t = (nowSec - _blink.startAt) / _blink.duration;
+  if (t >= 1) {
+    influences[_blink.index] = 0;                 // 開き切って終了
+    _blink.phase = 'idle';
+    _blink.nextAt = nowSec + randRange(BLINK_MIN_INTERVAL, BLINK_MAX_INTERVAL);
+    _blink.applied = true;
+    return;
+  }
+  influences[_blink.index] = Math.sin(t * Math.PI); // 0→1→0 で滑らかに閉じて開く
+  _blink.applied = true;
+}
+
+// モーション再生（helper が表情を制御）へ切り替わるときに呼ぶ。開閉状態だけを
+// 手放しにリセットする（モーフ値は helper が上書きするのでここでは触らない）。
+function suspendBlink() {
+  _blink.phase = 'idle';
+  _blink.applied = false;
+}
+
+// -----------------------------------------------------------------------------
 // 描画ループ
 // -----------------------------------------------------------------------------
 
@@ -2147,6 +2238,8 @@ let rafId = null;
 
 function animate() {
   rafId = requestAnimationFrame(animate);
+
+  const nowSec = performance.now() * 0.001; // まばたき等の時間基準（秒）
 
   // ---- カメラ姿勢更新 ---------------------------------------------------------
   updateCameraPose();
@@ -2212,6 +2305,13 @@ function animate() {
   //   ダンスのボーン更新（mmdHelper.update）と揺れもの適用の「後」に呼ぶことで、
   //   今フレームの姿勢を遅延なく反映し、📊 のデバッグ Yaw も現在の見た目と一致させる。
   lightController.update(currentModel);
+
+  // ---- 自然なまばたき ---------------------------------------------------------
+  //   モーション（VMD）が今フレーム姿勢・表情を書いていない＝再生中でないときだけ、
+  //   「まばたき」モーフを自前で動かす。再生中は helper が表情を制御するので手放す。
+  //   シーク中は applySeek 側が表情を当てるため、ここでは触らない。
+  if (!danceUpdatedThisFrame && !isSeekScrubbing()) updateBlink(nowSec);
+  else suspendBlink();
 
   // [一時診断] 加速度が実際に届いているか／対象ボーン数を画面に常時表示（sensor.js）。
   // 端末を振っても acc が 0.00 のままなら devicemotion 未配信が原因。右上アイコンで OFF にできる。
