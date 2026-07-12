@@ -28,7 +28,7 @@ import {
   getOrientationAngles,
   renderSwayDebug,
   isSwayDebug,
-} from './sensor.js?v=21';
+} from './sensor.js?v=22';
 
 // 楽曲の読み込み・再生制御・シークバー（audio.js）
 import {
@@ -37,7 +37,7 @@ import {
   updateSeekBar,
   onAudioEnded,
   isSeekScrubbing,
-} from './audio.js?v=21';
+} from './audio.js?v=22';
 
 // -----------------------------------------------------------------------------
 // 設定値
@@ -716,7 +716,9 @@ const _eyeCache = {
   leftRest: new THREE.Quaternion(), rightRest: new THREE.Quaternion(), headRest: new THREE.Quaternion(),
   headModified: false,
   eyeRadius: 0.5, // 眼球半径（ボーン原点→瞳表面。チェック線の起点を表面に合わせるのに使う）
+  followers: [], // 回転付与で目に追従するボーン（ハイライト＝目光 など）。{bone,parentBone,ratio,rest}
 };
+const _grantQuat = new THREE.Quaternion(); // 付与量の一時計算用
 const _eyeWorldPos   = new THREE.Vector3();     // 眼球ボーンのワールド位置（一時）
 const _eyeParentQuat = new THREE.Quaternion();  // 親（頭）の world 回転（一時）
 const _eyeDir        = new THREE.Vector3();     // 目→カメラのワールド方向（一時）
@@ -791,8 +793,49 @@ function resolveEyeBones(model, cache) {
   if (head)  cache.headRest.copy(head.quaternion);
   const r = skinned && left ? estimateEyeRadius(skinned, left) : 0;
   cache.eyeRadius = (r > 0.01) ? r : 0.5; // 推定できなければ既定 0.5
-  console.log(`カメラ目線 対象ボーン: 左目=${left ? left.name : 'なし'} / 右目=${right ? right.name : 'なし'} / 頭=${head ? head.name : 'なし'} / 眼球半径≈${cache.eyeRadius.toFixed(2)}`);
+
+  // 回転付与（inheritRotation / grant）で目に追従するボーン（ハイライト＝「目光」等）を集める。
+  //   PMX の付与情報は three.js が geometry.userData.MMD.bones[i].grant に保持している
+  //   （{ parentIndex, ratio, affectRotation, ... }）。付与親が左目/右目（およびそこから連鎖する
+  //   付与ボーン）で回転付与のものを、ボーン番号順（＝変形順）に集める。これらは目ボーンの
+  //   「子」ではなく付与でのみ追従するため、目を手動で回すこのモードでは自前で伝播が要る。
+  cache.followers = [];
+  try {
+    const bones = skinned && skinned.skeleton ? skinned.skeleton.bones : null;
+    const params = skinned && skinned.geometry && skinned.geometry.userData
+      && skinned.geometry.userData.MMD ? skinned.geometry.userData.MMD.bones : null;
+    if (bones && params && (left || right)) {
+      const reach = new Set();
+      if (left)  reach.add(bones.indexOf(left));
+      if (right) reach.add(bones.indexOf(right));
+      for (let i = 0; i < params.length && i < bones.length; i++) {
+        const g = params[i] && params[i].grant;
+        if (g && g.affectRotation && typeof g.ratio === 'number' && reach.has(g.parentIndex)) {
+          const bone = bones[i], parentBone = bones[g.parentIndex];
+          if (bone && parentBone && bone !== left && bone !== right) {
+            cache.followers.push({ bone, parentBone, ratio: g.ratio, rest: bone.quaternion.clone() });
+            reach.add(i); // この付与ボーンからさらに付与される連鎖も取り込む
+          }
+        }
+      }
+    }
+  } catch (_) { cache.followers = []; }
+
+  const fnames = cache.followers.map((f) => f.bone.name).join(',') || 'なし';
+  console.log(`カメラ目線 対象ボーン: 左目=${left ? left.name : 'なし'} / 右目=${right ? right.name : 'なし'} / 頭=${head ? head.name : 'なし'} / 眼球半径≈${cache.eyeRadius.toFixed(2)} / 付与追従=${fnames}`);
   return cache;
+}
+
+// 目に付与追従するボーン（ハイライト等）へ、目の回転を付与率ぶん伝播させる。
+//   MMD の回転付与と同様、bone.quaternion = rest ⊗ slerp(identity, 付与親のローカル回転, ratio)。
+//   付与親が先に更新済みになるようボーン番号順（collect 時点で保証）に処理する。
+function applyEyeFollowers() {
+  const fs = _eyeCache.followers;
+  if (!fs || !fs.length) return;
+  for (const f of fs) {
+    _grantQuat.set(0, 0, 0, 1).slerp(f.parentBone.quaternion, f.ratio); // 付与親ローカル回転 ^ ratio
+    f.bone.quaternion.copy(f.rest).multiply(_grantQuat);
+  }
 }
 
 // 1 本の眼球ボーンをカメラ方向へ向ける（顔の正面から maxRad まで）。
@@ -851,6 +894,8 @@ function updateEyeContact() {
     // 頭を回した「後」に目を合わせるので、頭で足りない残差だけ目が担い、視線はカメラを向く。
     aimEyeAtCamera(c.left,  eyeMaxAngleRad);
     aimEyeAtCamera(c.right, eyeMaxAngleRad);
+    // ハイライト等（回転付与で目に追従するボーン）へ目の回転を伝播させる。
+    applyEyeFollowers();
   }
   updateEyeDebugLines(c.left, c.right);
 }
@@ -1382,6 +1427,7 @@ export function setEyeContact(on) {
     const c = resolveEyeBones(currentModel, _eyeCache);
     if (c.left)  c.left.quaternion.copy(c.leftRest);
     if (c.right) c.right.quaternion.copy(c.rightRest);
+    if (c.followers) for (const f of c.followers) f.bone.quaternion.copy(f.rest);
     const playing = danceState.active && danceState.playing;
     if (c.head && c.headModified && !playing) { c.head.quaternion.copy(c.headRest); c.headModified = false; }
   }

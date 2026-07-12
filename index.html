@@ -102,9 +102,10 @@
        最大角度（度）をスライダーで調整する（view3d.js の setEyeMaxAngle）。 -->
   <button id="eye-settings-toggle" type="button" title="カメラ目線の角度設定" aria-haspopup="dialog" aria-expanded="false">🎯</button>
 
-  <!-- チェック線 ON/OFF トグル（🎯 の下）。ON にすると、瞳の実際の視線（黄）と
-       瞳→カメラの理想線（水色）を描画する。両者が重なれば目線が正しくカメラを
-       向いている（view3d.js の setEyeDebug）。 -->
+  <!-- チェック線 ON/OFF トグル（🎯 の下）。ON にすると、瞳の表面から実際の視線方向へ
+       黄色い線を描き、瞳表面に赤マーカーを表示する。さらに画面下に「視線とカメラ方向の
+       角度誤差（度）」を数値表示する。誤差が 0°付近なら瞳は正しくカメラを向いている
+       （view3d.js の setEyeDebug）。 -->
   <button id="eye-debug-toggle" type="button" title="目線チェック線をON/OFF" aria-pressed="false">📏</button>
 
   <!-- 目線チェックの数値表示（📏 ON のとき view3d.js が毎フレーム更新）。視線とカメラ方向の
@@ -244,6 +245,6 @@
   </div>
 
   <!-- ?v= はキャッシュ破棄用。更新時に番号を上げると確実に最新JSが読み込まれる。 -->
-  <script type="module" src="main.js?v=21"></script>
+  <script type="module" src="main.js?v=22"></script>
 </body>
 </html>
